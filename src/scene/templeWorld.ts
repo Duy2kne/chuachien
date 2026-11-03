@@ -804,6 +804,25 @@ export class TempleWorld {
     });
   }
 
+  // Tán lá dạng cụm nhiều khối nhỏ lệch tâm, xoay ngẫu nhiên (thay cho 1 khối cầu/đa diện đơn to)
+  // để trông xù tự nhiên như lá cây thật, đỡ giống "viên bi láng" phẳng lì.
+  private createFoliageClump(mats: THREE.Material[], radius: number, count = 5): THREE.Group {
+    const clump = new THREE.Group();
+    for (let i = 0; i < count; i++) {
+      const isCore = i === 0;
+      const s = radius * (isCore ? 1.05 : 0.5 + Math.random() * 0.35);
+      const mat = mats[Math.floor(Math.random() * mats.length)];
+      const lump = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 1), mat);
+      const a = Math.random() * Math.PI * 2;
+      const r = isCore ? 0 : radius * (0.3 + Math.random() * 0.3);
+      lump.position.set(Math.cos(a) * r, (Math.random() - 0.5) * radius * 0.3, Math.sin(a) * r);
+      lump.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      lump.castShadow = true;
+      clump.add(lump);
+    }
+    return clump;
+  }
+
   // Bệ đá cao với chậu men lam và cây cảnh hoa mai vàng rực rỡ / tán xanh (như trong ảnh mẫu)
   private createPedestalBonsai(x: number, z: number, type: 'yellow_blossom' | 'green_foliage') {
     const group = new THREE.Group();
@@ -901,10 +920,9 @@ export class TempleWorld {
 
       const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.85, flatShading: true });
       this.themeMats.foliage.push(foliageMat);
-      const foliage = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 12), foliageMat);
-      foliage.scale.set(1.2, 0.8, 1.2);
+      const foliage = this.createFoliageClump([foliageMat], 0.4, 4);
+      foliage.scale.set(1.2, 0.85, 1.2);
       foliage.position.set(0.08, 2.2, 0);
-      foliage.castShadow = true;
       group.add(foliage);
     }
 
@@ -2063,9 +2081,8 @@ export class TempleWorld {
         flatShading: true
       });
       this.themeMats.foliage.push(foliageMat);
-      const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(c.s, 1), foliageMat);
+      const foliage = this.createFoliageClump([foliageMat], c.s, 4);
       foliage.position.set(c.x, c.y, c.z);
-      foliage.castShadow = true;
       tree.add(foliage);
     }
 
@@ -2109,7 +2126,7 @@ export class TempleWorld {
       pot.position.y = 0.26;
       potGroup.add(pot);
 
-      const bonsaiFoliage = new THREE.Mesh(new THREE.DodecahedronGeometry(0.58, 1), foliageMat);
+      const bonsaiFoliage = this.createFoliageClump([foliageMat], 0.5, 4);
       bonsaiFoliage.position.set(0.08, 0.82, 0.05);
       potGroup.add(bonsaiFoliage);
 
@@ -2134,10 +2151,9 @@ export class TempleWorld {
       trunk.castShadow = true;
       tree.add(trunk);
 
-      const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(1.6, 1), plumeriaLeafMat);
+      const foliage = this.createFoliageClump([plumeriaLeafMat], 1.3, 5);
       foliage.position.set(0.1, 3.4, 0.1);
-      foliage.scale.set(1.4, 0.85, 1.4);
-      foliage.castShadow = true;
+      foliage.scale.set(1.4, 0.9, 1.4);
       tree.add(foliage);
 
       for (let f = 0; f < 5; f++) {
