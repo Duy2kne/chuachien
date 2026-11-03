@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { PlayerData, ActionType, RobeColor, AvatarStyle } from '../types.js';
+import { getTitle } from '../shared/merit.js';
+import { createHaloTexture } from './proceduralTextures.js';
 
 // Bảng màu áo tràng truyền thống chùa Việt Nam
 export const ROBE_COLORS: Record<RobeColor, { hex: number; name: string; css: string }> = {
@@ -236,7 +238,7 @@ function getFaceTexture(style: AvatarStyle, closed: boolean): THREE.CanvasTextur
 
 // Áo tràng phần thân: cổ giao lĩnh viền trắng, thắt lưng, nếp vải.
 // Lathe có phiStart = π nên mặt trước nằm giữa ảnh (x = 256 / 512).
-function makeTorsoTexture(robe: THREE.Color): THREE.CanvasTexture {
+function makeTorsoTexture(robe: THREE.Color, embroidered = false): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 512;
   c.height = 256;
@@ -275,6 +277,22 @@ function makeTorsoTexture(robe: THREE.Color): THREE.CanvasTexture {
   g.moveTo(256 + 78, 0);
   g.lineTo(256 + 10, 96);
   g.stroke();
+
+  // Áo vàng kim: hoa sen thêu chỉ đỏ trên ngực và lưng
+  if (embroidered) {
+    for (const [cx, cy] of [[150, 130], [380, 120], [470, 70], [40, 90]]) {
+      g.fillStyle = 'rgba(160, 40, 20, 0.75)';
+      for (let i = 0; i < 5; i++) {
+        g.beginPath();
+        g.ellipse(cx + (i - 2) * 9, cy - Math.abs(i - 2) * -4, 6, 16, (i - 2) * 0.45, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = 'rgba(255, 236, 160, 0.9)';
+      g.beginPath();
+      g.arc(cx, cy + 10, 5, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
 
   // Thắt lưng + nút buộc
   g.fillStyle = toCss(dark);
@@ -371,6 +389,8 @@ export class PlayerAvatar {
   private arms!: { left: ReturnType<typeof makeArm>; right: ReturnType<typeof makeArm> };
   private meditationAura!: THREE.Mesh;
   private palms = new THREE.Group();
+  private halo: THREE.Mesh | null = null;
+  private titleName = '';
   private readonly _v1 = new THREE.Vector3();
   private readonly _v2 = new THREE.Vector3();
 
@@ -413,13 +433,22 @@ export class PlayerAvatar {
     this.buildNameTag();
   }
 
+  private has(item: string) {
+    return (this.data.items || []).includes(item);
+  }
+
   private buildMesh() {
-    const robeColor = new THREE.Color(ROBE_COLORS[this.data.robe]?.hex ?? 0x5e371d);
+    const goldRobe = this.has('robe_gold');
+    const robeColor = new THREE.Color(goldRobe ? 0xc99a2e : ROBE_COLORS[this.data.robe]?.hex ?? 0x5e371d);
     const style: AvatarStyle = this.data.style === 'lay' ? 'lay' : 'monk';
 
     const skinMat = new THREE.MeshStandardMaterial({ color: SKIN_HEX, roughness: 0.7 });
     const robeMat = new THREE.MeshStandardMaterial({ color: robeColor, roughness: 0.85 });
-    const torsoMat = new THREE.MeshStandardMaterial({ map: makeTorsoTexture(robeColor), roughness: 0.85 });
+    const torsoMat = new THREE.MeshStandardMaterial({
+      map: makeTorsoTexture(robeColor, goldRobe),
+      roughness: goldRobe ? 0.45 : 0.85,
+      metalness: goldRobe ? 0.25 : 0
+    });
     const skirtMat = new THREE.MeshStandardMaterial({ map: makeSkirtTexture(robeColor), roughness: 0.85 });
     const sleeveMat = new THREE.MeshStandardMaterial({ color: robeColor, roughness: 0.85, side: THREE.DoubleSide });
 
@@ -491,8 +520,9 @@ export class PlayerAvatar {
     }
 
     // Tràng hạt đeo cổ
-    const beadMat = new THREE.MeshStandardMaterial({ color: 0x5a1f12, roughness: 0.35, metalness: 0.1 });
-    const beads = new THREE.InstancedMesh(new THREE.SphereGeometry(0.019, 8, 6), beadMat, 22);
+    const agarwood = this.has('mala_tram');
+    const beadMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.1 });
+    const beads = new THREE.InstancedMesh(new THREE.SphereGeometry(agarwood ? 0.024 : 0.019, 10, 8), beadMat, 22);
     const dummy = new THREE.Object3D();
     for (let i = 0; i < 22; i++) {
       const a = (i / 22) * Math.PI * 2;
@@ -501,9 +531,14 @@ export class PlayerAvatar {
       dummy.position.set(Math.sin(a) * 0.15, 0.44 - front * front * 0.15, Math.cos(a) * 0.13 + 0.015 + front * 0.03);
       dummy.updateMatrix();
       beads.setMatrixAt(i, dummy.matrix);
+      // Gỗ trầm nâu sẫm, cứ 5 hạt có 1 hạt vàng
+      beads.setColorAt(i, new THREE.Color(agarwood ? (i % 5 === 0 ? 0xd4a537 : 0x3b1d0e) : 0x5a1f12));
     }
     this.hips.add(beads);
-    const tassel = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.06, 8), new THREE.MeshStandardMaterial({ color: 0xd97706 }));
+    const tassel = new THREE.Mesh(
+      new THREE.ConeGeometry(agarwood ? 0.03 : 0.022, agarwood ? 0.09 : 0.06, 8),
+      new THREE.MeshStandardMaterial({ color: agarwood ? 0xb91c1c : 0xd97706 })
+    );
     tassel.position.set(0, 0.26, 0.19);
     tassel.rotation.x = Math.PI;
     this.hips.add(tassel);
@@ -552,6 +587,46 @@ export class PlayerAvatar {
           this.head.add(dot);
         }
       }
+    }
+
+    if (this.has('non_la')) {
+      // Nón lá: chóp nón lá cọ, các vòng nan, quai đỏ dưới cằm
+      const hatMat = new THREE.MeshStandardMaterial({ color: 0xe9d7a5, roughness: 0.85, side: THREE.DoubleSide });
+      const hat = new THREE.Mesh(new THREE.ConeGeometry(0.56, 0.3, 40, 1, true), hatMat);
+      hat.position.y = 0.68;
+      this.head.add(hat);
+      const ribMat = new THREE.MeshStandardMaterial({ color: 0xc9b07a, roughness: 0.9 });
+      for (let i = 1; i <= 3; i++) {
+        const k = i / 4;
+        const rib = new THREE.Mesh(new THREE.TorusGeometry(0.56 * (1 - k) + 0.005, 0.006, 4, 40), ribMat);
+        rib.rotation.x = Math.PI / 2;
+        rib.position.y = 0.53 + 0.3 * k;
+        this.head.add(rib);
+      }
+      const strap = new THREE.Mesh(
+        new THREE.TorusGeometry(0.3, 0.008, 4, 32, Math.PI),
+        new THREE.MeshStandardMaterial({ color: 0xb91c1c })
+      );
+      strap.rotation.z = Math.PI;
+      strap.position.set(0, 0.42, 0.05);
+      strap.scale.set(1.05, 1.25, 1);
+      this.head.add(strap);
+    }
+
+    if (this.has('halo')) {
+      // Hào quang tỏa sáng sau đầu
+      this.halo = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.15, 1.15),
+        new THREE.MeshBasicMaterial({
+          map: createHaloTexture(),
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          opacity: 0.85
+        })
+      );
+      this.halo.position.set(0, 0.3, -0.36);
+      this.head.add(this.halo);
     }
 
     // 4. Hai cánh tay liền khối (mặt nhân vật hướng +z, tay trái nằm bên +x)
@@ -741,36 +816,51 @@ export class PlayerAvatar {
     for (const p of Object.values(this.props)) p.visible = false;
   }
 
-  // ===================== BILLBOARD TÊN NGƯỜI CHƠI =====================
+  // ===================== BILLBOARD TÊN + DANH HIỆU =====================
   private buildNameTag() {
+    if (this.nameSprite) {
+      this.group.remove(this.nameSprite);
+      this.nameSprite.material.map?.dispose();
+      this.nameSprite.material.dispose();
+    }
+    const title = getTitle(this.data.merit || 0);
+    this.titleName = title.name;
+
     const canvas = document.createElement('canvas');
     canvas.width = 384;
-    canvas.height = 80;
+    canvas.height = 112;
     const ctx = canvas.getContext('2d')!;
     const text = this.data.name || 'Phật tử';
 
+    // Danh hiệu
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 22px "Be Vietnam Pro", sans-serif';
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(20, 14, 10, 0.85)';
+    ctx.strokeText(`〈${title.name}〉`, 192, 18);
+    ctx.fillStyle = title.color;
+    ctx.fillText(`〈${title.name}〉`, 192, 18);
+
+    // Tên
     ctx.font = 'bold 30px "Be Vietnam Pro", sans-serif';
     const w = Math.min(360, ctx.measureText(text).width + 48);
     const x = (384 - w) / 2;
-
     ctx.fillStyle = this.isSelf ? 'rgba(180, 83, 9, 0.92)' : 'rgba(28, 25, 23, 0.78)';
     ctx.strokeStyle = this.isSelf ? '#fde68a' : 'rgba(253, 230, 138, 0.45)';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.roundRect(x, 14, w, 52, 26);
+    ctx.roundRect(x, 46, w, 52, 26);
     ctx.fill();
     ctx.stroke();
-
     ctx.fillStyle = '#fffbeb';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, 192, 41, 330);
+    ctx.fillText(text, 192, 73, 330);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     this.nameSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
-    this.nameSprite.scale.set(1.25, 0.26, 1);
-    this.nameSprite.position.set(0, 1.62, 0);
+    this.nameSprite.scale.set(1.25, 0.365, 1);
+    this.nameSprite.position.set(0, 1.68, 0);
     this.nameSprite.renderOrder = 10;
     this.group.add(this.nameSprite);
   }
@@ -838,7 +928,7 @@ export class PlayerAvatar {
     texture.colorSpace = THREE.SRGBColorSpace;
     this.bubbleSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
     this.bubbleSprite.scale.set(2.4, 0.94, 1);
-    this.bubbleSprite.position.set(0, 2.15, 0);
+    this.bubbleSprite.position.set(0, 2.25, 0);
     this.bubbleSprite.renderOrder = 11;
     this.group.add(this.bubbleSprite);
 
@@ -866,6 +956,8 @@ export class PlayerAvatar {
         this.bubbleSprite = null;
       }
     }
+
+    if (getTitle(this.data.merit || 0).name !== this.titleName) this.buildNameTag();
 
     // 2. Nội suy vị trí người chơi khác
     if (!this.isSelf) {
@@ -1172,6 +1264,8 @@ export class PlayerAvatar {
       mat.map = faceMap;
       mat.needsUpdate = true;
     }
+
+    if (this.halo) this.halo.rotation.z += 0.004;
 
     const aura = this.meditationAura;
     aura.visible = p.aura > 0.02;
