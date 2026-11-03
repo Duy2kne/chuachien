@@ -10,7 +10,8 @@ import {
   getGrassTexture,
   createHaloTexture
 } from './proceduralTextures.js';
-import type { IncenseItem, FlowerItem, LanternItem } from '../types.js';
+import type { IncenseItem, FlowerItem, LanternItem, LeafPile } from '../types.js';
+import { DEFAULT_THEME, type TempleTheme } from './themes.js';
 
 export interface CollisionBox {
   minX: number;
@@ -226,8 +227,24 @@ export class TempleWorld {
   // Cánh hoa rơi
   private fallingPetals: THREE.InstancedMesh | null = null;
   private petalDummy = new THREE.Object3D();
-  private petalCount = 150;
+  private petalCount = 450;
   private petalData: { x: number; y: number; z: number; rx: number; ry: number; speed: number; rotSpeed: number }[] = [];
+
+  // Vật liệu đổi màu theo cảnh của phòng (mùa xuân, thu, đông...)
+  private themeMats: Record<'mountains' | 'grass' | 'grassBlade' | 'blossom' | 'foliage' | 'treeFlower' | 'palm', THREE.MeshStandardMaterial[]> = {
+    mountains: [], grass: [], grassBlade: [], blossom: [], foliage: [], treeFlower: [], palm: []
+  };
+  public theme: TempleTheme = DEFAULT_THEME;
+  private particleKind: TempleTheme['particles']['kind'] = 'petal';
+  private particleSize = 1;
+  private particleSpeed = 1;
+  private readonly maxParticles = 450;
+
+  // Đống lá đa rụng trên sân (đồng bộ từ server)
+  public leafLayer = new THREE.Group();
+  private leafPiles = new Map<string, { data: LeafPile; group: THREE.Group; falling: number; sweptAt: number }>();
+  private leafGeo: THREE.ShapeGeometry | null = null;
+  private leafMats: THREE.MeshStandardMaterial[] = [];
 
   // Bụi cỏ & Hoa nhỏ InstancedMesh ngoài sân
   private grassMesh: THREE.InstancedMesh | null = null;
@@ -238,10 +255,12 @@ export class TempleWorld {
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.buildWorld();
+    this.applyTheme(DEFAULT_THEME);
   }
 
   private buildWorld() {
     this.scene.add(this.lanternLayer);
+    this.scene.add(this.leafLayer);
     this.setupLighting();
     this.buildSkyDome();
     this.buildMountainRanges();
@@ -446,6 +465,7 @@ export class TempleWorld {
 
     for (const lyr of layers) {
       const mat = new THREE.MeshStandardMaterial({ color: lyr.color, roughness: 1, flatShading: true });
+      this.themeMats.mountains.push(mat);
 
       for (let i = 0; i < lyr.count; i++) {
         // Bao quanh phía bắc, đông, tây (phía nam là cổng chùa nên để thoáng hơn)
@@ -482,6 +502,7 @@ export class TempleWorld {
       map: getGrassTexture(),
       roughness: 0.95
     });
+    this.themeMats.grass.push(grassGroundMat);
     const grassGround = new THREE.Mesh(grassGroundGeo, grassGroundMat);
     grassGround.rotation.x = -Math.PI / 2;
     grassGround.position.y = -0.04;
@@ -538,6 +559,7 @@ export class TempleWorld {
       roughness: 0.85,
       flatShading: true
     });
+    this.themeMats.grassBlade.push(grassBladeMat);
     this.grassMesh = new THREE.InstancedMesh(grassBladeGeo, grassBladeMat, 2000);
 
     const dummy = new THREE.Object3D();
@@ -787,6 +809,7 @@ export class TempleWorld {
         roughness: 0.4,
         flatShading: true
       });
+      this.themeMats.blossom.push(flowerMat);
 
       const clusterOffsets = [
         { x: 0.12, y: 2.55, z: 0.12, s: 0.22 },
@@ -810,6 +833,7 @@ export class TempleWorld {
       group.add(trunk);
 
       const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.85, flatShading: true });
+      this.themeMats.foliage.push(foliageMat);
       const foliage = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 12), foliageMat);
       foliage.scale.set(1.2, 0.8, 1.2);
       foliage.position.set(0.08, 2.2, 0);
@@ -1084,7 +1108,11 @@ export class TempleWorld {
     this.scene.add(hall);
 
     this.collisionBoxes.push(
-      { minX: -11, maxX: 11, minZ: -20, maxZ: -4, type: 'step', height: 0.9 },
+      // Mép nền chính điện: không leo thẳng lên được, phải đi bậc tam cấp ở giữa (rộng 7.6)
+      { minX: -11.2, maxX: -3.85, minZ: -4.1, maxZ: -3.9, type: 'impassable' },
+      { minX: 3.85, maxX: 11.2, minZ: -4.1, maxZ: -3.9, type: 'impassable' },
+      { minX: -11.2, maxX: -10.9, minZ: -20, maxZ: -3.9, type: 'impassable' },
+      { minX: 10.9, maxX: 11.2, minZ: -20, maxZ: -3.9, type: 'impassable' },
       { minX: -3.8, maxX: 3.8, minZ: -16.8, maxZ: -12.5, type: 'impassable' },
       { minX: -11, maxX: 11, minZ: -19, maxZ: -18, type: 'impassable' },
       { minX: -10.5, maxX: -9.5, minZ: -19, maxZ: -6, type: 'impassable' },
@@ -1741,14 +1769,6 @@ export class TempleWorld {
 
     this.scene.add(pavilion);
 
-    this.collisionBoxes.push({
-      minX: 15.0,
-      maxX: 21.0,
-      minZ: 5.0,
-      maxZ: 11.0,
-      type: 'step',
-      height: 0.6
-    });
     // Trống bát nhã giữa lầu (trục trống nằm theo trục z)
     this.collisionBoxes.push({ minX: 16.9, maxX: 19.1, minZ: 7.2, maxZ: 8.8, type: 'impassable' });
   }
@@ -1958,6 +1978,7 @@ export class TempleWorld {
         roughness: 0.85,
         flatShading: true
       });
+      this.themeMats.foliage.push(foliageMat);
       const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(c.s, 1), foliageMat);
       foliage.position.set(c.x, c.y, c.z);
       foliage.castShadow = true;
@@ -1983,9 +2004,12 @@ export class TempleWorld {
     const potTex = createBonsaiPotTexture();
     const potMat = new THREE.MeshStandardMaterial({ map: potTex, roughness: 0.3, metalness: 0.1 });
     const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.8, flatShading: true });
+    this.themeMats.foliage.push(foliageMat);
     const plumeriaBarkMat = new THREE.MeshStandardMaterial({ color: 0x6e6255, roughness: 0.9 });
     const plumeriaLeafMat = new THREE.MeshStandardMaterial({ color: 0x386641, roughness: 0.8, flatShading: true });
+    this.themeMats.foliage.push(plumeriaLeafMat);
     const plumeriaFlowerMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+    this.themeMats.treeFlower.push(plumeriaFlowerMat);
 
     // Chậu bonsai men lam dọc hành lang
     const bonsaiPositions = [
@@ -2117,6 +2141,7 @@ export class TempleWorld {
       flatShading: true,
       side: THREE.DoubleSide
     });
+    this.themeMats.palm.push(frondMat);
 
     const segments = 8;
     const segH = height / segments;
@@ -2199,6 +2224,7 @@ export class TempleWorld {
       roughness: 0.5
     });
     this.fallingPetals = new THREE.InstancedMesh(petalGeo, petalMat, this.petalCount);
+    this.fallingPetals.frustumCulled = false;
 
     for (let i = 0; i < this.petalCount; i++) {
       this.petalData.push({
@@ -2232,7 +2258,7 @@ export class TempleWorld {
       this.hemiLight.groundColor.setHex(0x0a101d);
       this.hemiLight.intensity = 0.45;
       this.scene.environmentIntensity = 0.12;
-      this.scene.fog = new THREE.Fog(0x161c36, 60, 300);
+      this.scene.fog = new THREE.Fog(0x161c36, Math.min(60, this.theme.fog.near), Math.min(300, this.theme.fog.far));
 
       if (this.starsPoints) this.starsPoints.visible = true;
       if (this.moonGroup) this.moonGroup.visible = true;
@@ -2242,19 +2268,20 @@ export class TempleWorld {
       for (const pl of this.lanternsGlow) pl.intensity = 1.4;
       for (const m of this.glowMaterials) m.emissiveIntensity = 2.4;
     } else {
-      // Ngày nắng chiều: gradient #6fa8dc -> #ffe3b3
-      this.skyMaterial.uniforms.topColor.value.setHex(0x6fa8dc);
-      this.skyMaterial.uniforms.bottomColor.value.setHex(0xf3e6cc);
+      // Ban ngày: màu trời, nắng, sương theo cảnh của phòng
+      const th = this.theme;
+      this.skyMaterial.uniforms.topColor.value.setHex(th.sky.top);
+      this.skyMaterial.uniforms.bottomColor.value.setHex(th.sky.bottom);
 
-      this.sunLight.color.setHex(0xffd9a0);
-      this.sunLight.intensity = 2.2;
-      this.sunLight.position.set(-38, 34, 30);
+      this.sunLight.color.setHex(th.sun.color);
+      this.sunLight.intensity = th.sun.intensity;
+      this.sunLight.position.set(...th.sun.position);
 
-      this.hemiLight.color.setHex(0xfff1d6);
-      this.hemiLight.groundColor.setHex(0x6b5a3a);
-      this.hemiLight.intensity = 0.55;
+      this.hemiLight.color.setHex(th.hemi.sky);
+      this.hemiLight.groundColor.setHex(th.hemi.ground);
+      this.hemiLight.intensity = th.hemi.intensity;
       this.scene.environmentIntensity = 0.35;
-      this.scene.fog = new THREE.Fog(0xdfe6df, 90, 520);
+      this.scene.fog = new THREE.Fog(th.fog.color, th.fog.near, th.fog.far);
 
       if (this.starsPoints) this.starsPoints.visible = false;
       if (this.moonGroup) this.moonGroup.visible = false;
@@ -2262,6 +2289,159 @@ export class TempleWorld {
       for (const pl of this.nightLights) pl.intensity = 0.3;
       for (const pl of this.lanternsGlow) pl.intensity = 0.15;
       for (const m of this.glowMaterials) m.emissiveIntensity = 0.5;
+    }
+  }
+
+  // ===================== ĐỔI CẢNH THEO PHÒNG =====================
+  public applyTheme(theme: TempleTheme) {
+    this.theme = theme;
+    const set = (mats: THREE.MeshStandardMaterial[], colors: number | number[]) => {
+      mats.forEach((m, i) => m.color.setHex(Array.isArray(colors) ? colors[i % colors.length] : colors));
+    };
+    set(this.themeMats.mountains, theme.mountains);
+    set(this.themeMats.grass, theme.grass);
+    set(this.themeMats.grassBlade, theme.grassBlade);
+    set(this.themeMats.blossom, theme.blossom);
+    set(this.themeMats.foliage, theme.foliage);
+    set(this.themeMats.treeFlower, theme.treeFlower);
+    set(this.themeMats.palm, theme.palm);
+
+    // Hạt rơi
+    const pt = theme.particles;
+    this.particleKind = pt.kind;
+    this.particleSize = pt.size;
+    this.particleSpeed = pt.fallSpeed;
+    if (this.fallingPetals) {
+      this.fallingPetals.count = Math.min(this.maxParticles, pt.count);
+      const pm = this.fallingPetals.material as THREE.MeshStandardMaterial;
+      pm.color.setHex(pt.color);
+      const glow = pt.kind === 'firefly' ? 1.4 : pt.kind === 'snow' ? 0.35 : 0;
+      pm.emissive.setHex(pt.color);
+      pm.emissiveIntensity = glow;
+      pm.opacity = pt.kind === 'snow' ? 0.95 : 0.85;
+    }
+
+    // Lá đa trên sân đổi màu theo mùa
+    this.leafMats.forEach((m, i) => m.color.setHex(theme.leafPile[i % theme.leafPile.length]));
+
+    this.setDayNight(this.isNight);
+  }
+
+  // ===================== LÁ ĐA RỤNG =====================
+  private getLeafAssets() {
+    if (!this.leafGeo) {
+      // Lá đa: bầu dục, đầu nhọn, cuống ngắn
+      const shape = new THREE.Shape();
+      shape.moveTo(0, -0.11);
+      shape.quadraticCurveTo(0.1, -0.06, 0.085, 0.04);
+      shape.quadraticCurveTo(0.06, 0.12, 0, 0.17);
+      shape.quadraticCurveTo(-0.06, 0.12, -0.085, 0.04);
+      shape.quadraticCurveTo(-0.1, -0.06, 0, -0.11);
+      this.leafGeo = new THREE.ShapeGeometry(shape, 6);
+      this.leafGeo.rotateX(-Math.PI / 2);
+      this.leafMats = [0, 1, 2, 3].map(i => new THREE.MeshStandardMaterial({
+        color: this.theme.leafPile[i % this.theme.leafPile.length],
+        roughness: 0.8,
+        side: THREE.DoubleSide
+      }));
+    }
+    return { geo: this.leafGeo, mats: this.leafMats };
+  }
+
+  // Thêm 1 đống lá; animate = lá rơi từ trên cây xuống
+  public addLeafPile(data: LeafPile, animate = true) {
+    if (this.leafPiles.has(data.id)) return;
+    const { geo, mats } = this.getLeafAssets();
+    const group = new THREE.Group();
+    let seed = data.seed || 1;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return (seed % 10000) / 10000;
+    };
+    const count = 9 + Math.floor(rand() * 5);
+    for (let i = 0; i < count; i++) {
+      const leaf = new THREE.Mesh(geo, mats[i % mats.length]);
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * 0.5;
+      leaf.position.set(Math.cos(a) * r, 0.015 + i * 0.004, Math.sin(a) * r);
+      leaf.rotation.set((rand() - 0.5) * 0.4, rand() * Math.PI * 2, (rand() - 0.5) * 0.4);
+      const sc = 0.9 + rand() * 0.6;
+      leaf.scale.setScalar(sc);
+      leaf.userData.rest = leaf.position.clone();
+      leaf.userData.drop = 4 + rand() * 4;       // độ cao bắt đầu rơi
+      leaf.userData.spin = (rand() - 0.5) * 6;
+      leaf.receiveShadow = true;
+      group.add(leaf);
+    }
+    group.position.set(data.x, this.getGroundHeight(data.x, data.z), data.z);
+    this.leafLayer.add(group);
+    this.leafPiles.set(data.id, { data, group, falling: animate ? 0 : 1, sweptAt: 0 });
+  }
+
+  // Quét đống lá: lá bay gọn về một phía rồi biến mất (sau delay để khớp động tác chổi)
+  public removeLeafPile(id: string, delayMs = 0) {
+    const pile = this.leafPiles.get(id);
+    if (!pile || pile.sweptAt) return;
+    pile.sweptAt = performance.now() + delayMs;
+  }
+
+  public syncLeafPiles(list: LeafPile[]) {
+    const ids = new Set(list.map(l => l.id));
+    for (const [id, pile] of this.leafPiles) {
+      if (!ids.has(id)) {
+        this.leafLayer.remove(pile.group);
+        this.leafPiles.delete(id);
+      }
+    }
+    for (const l of list) this.addLeafPile(l, false);
+  }
+
+  // Đống lá gần nhất còn trên sân
+  public getNearestLeafPile(x: number, z: number): LeafPile | null {
+    let best: LeafPile | null = null;
+    let bestD = Infinity;
+    for (const pile of this.leafPiles.values()) {
+      if (pile.sweptAt) continue;
+      const d = Math.hypot(pile.data.x - x, pile.data.z - z);
+      if (d < bestD) {
+        bestD = d;
+        best = pile.data;
+      }
+    }
+    return best;
+  }
+
+  private updateLeafPiles(delta: number) {
+    const now = performance.now();
+    for (const [id, pile] of this.leafPiles) {
+      // Lá rơi xoáy từ trên cao xuống
+      if (pile.falling < 1) {
+        pile.falling = Math.min(1, pile.falling + delta / 3.2);
+        const f = pile.falling;
+        for (const leaf of pile.group.children) {
+          const rest = leaf.userData.rest as THREE.Vector3;
+          const h = leaf.userData.drop * (1 - f) * (1 - f);
+          leaf.position.set(
+            rest.x + Math.sin(f * 9 + leaf.userData.spin) * 0.6 * (1 - f),
+            rest.y + h,
+            rest.z + Math.cos(f * 7 + leaf.userData.spin) * 0.6 * (1 - f)
+          );
+          leaf.rotation.z = leaf.userData.spin * (1 - f);
+        }
+      }
+      // Bị quét: lá dồn lại, thu nhỏ rồi biến mất
+      if (pile.sweptAt && now >= pile.sweptAt) {
+        const k = Math.min(1, (now - pile.sweptAt) / 900);
+        for (const leaf of pile.group.children) {
+          const rest = leaf.userData.rest as THREE.Vector3;
+          leaf.position.set(rest.x * (1 - k) + k * 0.6, rest.y + Math.sin(k * Math.PI) * 0.15, rest.z * (1 - k));
+        }
+        pile.group.scale.setScalar(Math.max(0.01, 1 - k));
+        if (k >= 1) {
+          this.leafLayer.remove(pile.group);
+          this.leafPiles.delete(id);
+        }
+      }
     }
   }
 
@@ -2461,19 +2641,32 @@ export class TempleWorld {
       sp.material.rotation = elapsed * 0.2 + i;
     }
 
-    // 3. Cánh hoa rơi InstancedMesh
+    // 3. Hạt rơi theo cảnh: cánh hoa, lá vàng, tuyết hoặc đom đóm
     if (this.fallingPetals) {
-      for (let i = 0; i < this.petalCount; i++) {
+      const kind = this.particleKind;
+      const count = this.fallingPetals.count;
+      for (let i = 0; i < count; i++) {
         const p = this.petalData[i];
-        p.y -= delta * p.speed;
-        p.x += Math.sin(elapsed * 1.5 + i) * delta * 0.3;
-        p.rx += delta * p.rotSpeed;
-        p.ry += delta * (p.rotSpeed * 0.7);
+        if (kind === 'firefly') {
+          // Đom đóm bay lượn thấp, nhấp nháy
+          p.x += Math.sin(elapsed * 0.7 + i * 1.3) * delta * 0.6;
+          p.z += Math.cos(elapsed * 0.6 + i * 2.1) * delta * 0.6;
+          p.y = 0.6 + (i % 7) * 0.35 + Math.sin(elapsed * 1.1 + i) * 0.4;
+          const blink = 0.4 + 0.6 * Math.max(0, Math.sin(elapsed * 2.2 + i * 0.9));
+          this.petalDummy.scale.setScalar(this.particleSize * blink);
+        } else {
+          p.y -= delta * p.speed * this.particleSpeed;
+          const sway = kind === 'snow' ? 0.5 : kind === 'leaf' ? 0.8 : 0.3;
+          p.x += Math.sin(elapsed * 1.5 + i) * delta * sway;
+          p.rx += delta * p.rotSpeed * (kind === 'snow' ? 0.2 : 1);
+          p.ry += delta * (p.rotSpeed * 0.7);
+          this.petalDummy.scale.setScalar(this.particleSize);
+        }
 
         if (p.y < 0.1) {
           p.y = 11 + Math.random() * 4;
-          p.x = (Math.random() - 0.5) * 60;
-          p.z = (Math.random() - 0.5) * 60;
+          p.x = (Math.random() - 0.5) * 70;
+          p.z = (Math.random() - 0.5) * 70 + 5;
         }
 
         this.petalDummy.position.set(p.x, p.y, p.z);
@@ -2483,6 +2676,8 @@ export class TempleWorld {
       }
       this.fallingPetals.instanceMatrix.needsUpdate = true;
     }
+
+    this.updateLeafPiles(delta);
 
     // 4. Hào quang Đức Phật Thích Ca nhấp nháy nhẹ trang nghiêm
     if (this.buddhaHalo) {
@@ -2533,9 +2728,25 @@ export class TempleWorld {
     }
   }
 
+  // ===================== ĐỘ CAO MẶT NỀN =====================
+  // Nền chính điện cao 0.9, 5 bậc tam cấp mỗi bậc 0.18, nền lầu chuông bát giác cao 0.6 có mép vát
+  public getGroundHeight(x: number, z: number): number {
+    let h = 0;
+    if (Math.abs(x) <= 11 && z >= -20 && z <= -4) {
+      h = 0.9;
+    } else if (Math.abs(x) <= 3.8 && z > -4 && z < -1.95) {
+      // Bậc k (1..5) có tâm z = -4 + (5 - k) * 0.45
+      const k = Math.min(5, Math.max(0, 5 - Math.round((z + 4) / 0.45)));
+      h = 0.18 * k;
+    }
+    const d = Math.hypot(x - 18, z - 8);
+    if (d < 4.6) h = Math.max(h, d < 4.05 ? 0.6 : (0.6 * (4.6 - d)) / 0.55);
+    return h;
+  }
+
   // ===================== KIỂM TRA VA CHẠM =====================
   public checkCollision(x: number, z: number, radius = 0.35): { allowed: boolean; height: number } {
-    let groundHeight = 0;
+    const groundHeight = this.getGroundHeight(x, z);
 
     for (const c of this.collisionCircles) {
       if (Math.hypot(x - c.x, z - c.z) < c.r + radius) return { allowed: false, height: groundHeight };
@@ -2548,8 +2759,6 @@ export class TempleWorld {
       if (inX && inZ) {
         if (box.type === 'impassable') {
           return { allowed: false, height: groundHeight };
-        } else if (box.type === 'step') {
-          groundHeight = Math.max(groundHeight, box.height || 0);
         }
       }
     }
