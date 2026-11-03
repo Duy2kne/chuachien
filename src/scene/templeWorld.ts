@@ -6,7 +6,9 @@ import {
   getLacqueredWoodTexture,
   getSmokeSpriteTexture,
   createPlaqueTexture,
-  createBonsaiPotTexture
+  createBonsaiPotTexture,
+  getGrassTexture,
+  createHaloTexture
 } from './proceduralTextures.js';
 import type { IncenseItem, FlowerItem, LanternItem } from '../types.js';
 
@@ -21,54 +23,63 @@ export interface CollisionBox {
 
 // =========================================================================
 // HÀM TẠO MÁI CHÙA VIỆT NAM CONG VÚT (MAKE CURVED ROOF)
+// Mái chái 4 mặt dựng theo từng "vòng" từ diềm mái (t = 0) lên bờ nóc (t = 1).
 // Mặt mái võng xuống: y = h * (0.35t + 0.65t^2)
-// 4 góc mái vểnh cong lên (đầu đao): elevation = curl * (|u|*|v|)^4 * (1 - t)^2.5
+// 4 góc mái vểnh cong lên (đầu đao): độ nâng = curl * (|u|*|v|)^4 * (1 - t)^2.5
 // =========================================================================
+function roofRingPoint(
+  hw: number, hd: number, rw: number, height: number, curl: number,
+  t: number, s: number
+): THREE.Vector3 {
+  const a = hw + (rw - hw) * t;
+  const b = hd * (1 - t);
+  const side = Math.min(3, Math.floor(s));
+  const f = s - side;
+  // Thứ tự góc: trước-phải -> trước-trái -> sau-trái -> sau-phải
+  const corners = [[a, b], [-a, b], [-a, -b], [a, -b]];
+  const p0 = corners[side];
+  const p1 = corners[(side + 1) % 4];
+  const x = p0[0] + (p1[0] - p0[0]) * f;
+  const z = p0[1] + (p1[1] - p0[1]) * f;
+  const u = a > 1e-4 ? x / a : 0;
+  const v = b > 1e-4 ? z / b : 0;
+  const corner = Math.pow(Math.abs(u * v), 4);
+  const fall = Math.pow(1 - t, 2.5);
+  const flare = 1 + 0.07 * corner * fall;
+  const y = height * (0.35 * t + 0.65 * t * t) + curl * corner * fall;
+  return new THREE.Vector3(x * flare, y, z * flare);
+}
+
 export function makeCurvedRoofGeometry(
   width: number,
   depth: number,
   height: number,
   curl = 1.45,
-  segments = 24
+  segments = 16
 ): THREE.BufferGeometry {
-  const geom = new THREE.BufferGeometry();
+  const hw = width * 0.5;
+  const hd = depth * 0.5;
+  const rw = Math.max(hw * 0.12, hw - hd); // Nửa chiều dài bờ nóc
+  const rows = segments;
+  const perSide = segments;
+  const cols = perSide * 4;
+  const sideLen = [2 * hw, 2 * hd, 2 * hw, 2 * hd];
+  const slopeLen = Math.hypot(hd, height);
+
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
 
-  const halfW = width * 0.5;
-  const halfD = depth * 0.5;
-  const ridgeW = width * 0.35; // Bờ nóc thu nhỏ ở giữa
-  const ridgeD = depth * 0.08;
-
-  const rows = segments;
-  const cols = segments;
-
   for (let r = 0; r <= rows; r++) {
-    const t = r / rows; // 0 ở diềm mái, 1 ở bờ nóc
-    // Mặt mái võng xuống theo công thức parabol
-    const baseY = height * (0.35 * t + 0.65 * (t * t));
-
-    // Kích thước thu dần lên nóc
-    const currentW = halfW * (1 - t) + ridgeW * t;
-    const currentD = halfD * (1 - t) + ridgeD * t;
-
+    const t = r / rows;
+    let dist = 0;
     for (let c = 0; c <= cols; c++) {
-      const uFrac = c / cols; // 0 -> 1
-      const u = (uFrac - 0.5) * 2; // -1 -> 1
-      const v = (t - 0.5) * 2;
-
-      const x = u * currentW;
-      const z = (uFrac < 0.5 ? -1 : 1) * Math.sin(uFrac * Math.PI) * currentD;
-
-      // Độ cong vểnh đầu đao ở 4 góc: curl * (|u|*|v|)^4 * (1 - t)^2.5
-      const cornerFactor = Math.pow(Math.abs(u), 4) * Math.pow(1 - t, 2.5);
-      const curlElevation = curl * cornerFactor;
-
-      const y = baseY + curlElevation;
-
-      positions.push(x, y, (c / cols - 0.5) * currentD * 2);
-      uvs.push(uFrac * 4, t * 4);
+      const s = (c / perSide) % 4;
+      const p = roofRingPoint(hw, hd, rw, height, curl, t, c === cols ? 3.9999 : s);
+      positions.push(p.x, p.y, p.z);
+      const side = Math.min(3, Math.floor(c / perSide));
+      dist = sideLen.slice(0, side).reduce((acc, l) => acc + l, 0) + (c / perSide - side) * sideLen[side];
+      uvs.push(dist / 20, (t * slopeLen) / 20);
     }
   }
 
@@ -78,23 +89,104 @@ export function makeCurvedRoofGeometry(
       const i1 = i0 + 1;
       const i2 = i0 + (cols + 1);
       const i3 = i2 + 1;
-
       indices.push(i0, i2, i1);
       indices.push(i1, i2, i3);
     }
   }
 
+  const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geom.setIndex(indices);
   geom.computeVertexNormals();
-
   return geom;
+}
+
+// Mái hoàn chỉnh: mặt ngói + viền diềm mái vàng + bờ nóc + bờ chảy + đầu đao + đầu kìm
+const roofTrimMat = new THREE.MeshStandardMaterial({ color: 0xc9962c, metalness: 0.6, roughness: 0.35 });
+const roofRidgeMat = new THREE.MeshStandardMaterial({ color: 0x5b1d12, roughness: 0.6 });
+
+export function makeRoofGroup(
+  width: number,
+  depth: number,
+  height: number,
+  curl: number,
+  roofMat: THREE.Material
+): THREE.Group {
+  const group = new THREE.Group();
+  const hw = width * 0.5;
+  const hd = depth * 0.5;
+  const rw = Math.max(hw * 0.12, hw - hd);
+  const scale = Math.min(width, depth);
+
+  const roof = new THREE.Mesh(makeCurvedRoofGeometry(width, depth, height, curl), roofMat);
+  roof.castShadow = true;
+  roof.receiveShadow = true;
+  group.add(roof);
+
+  // Viền diềm mái (chạy vòng quanh mép mái)
+  const eave: THREE.Vector3[] = [];
+  for (let i = 0; i < 64; i++) eave.push(roofRingPoint(hw, hd, rw, height, curl, 0, (i / 64) * 4));
+  const eaveTube = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(eave, true), 160, Math.max(0.06, scale * 0.012), 6, true),
+    roofTrimMat
+  );
+  group.add(eaveTube);
+
+  // 4 bờ chảy từ đỉnh xuống góc mái + đầu đao cong vút ở cuối
+  for (let corner = 0; corner < 4; corner++) {
+    const pts: THREE.Vector3[] = [];
+    for (let r = 10; r >= 0; r--) pts.push(roofRingPoint(hw, hd, rw, height, curl, r / 10, corner));
+    const hip = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, Math.max(0.08, scale * 0.016), 6, false),
+      roofRidgeMat
+    );
+    hip.castShadow = true;
+    group.add(hip);
+
+    const tip = pts[pts.length - 1];
+    const out = new THREE.Vector3(tip.x, 0, tip.z).normalize();
+    const lift = Math.max(0.35, curl * 0.45);
+    const curlCurve = new THREE.QuadraticBezierCurve3(
+      tip.clone(),
+      tip.clone().add(out.clone().multiplyScalar(lift * 0.9)),
+      tip.clone().add(out.clone().multiplyScalar(lift * 0.7)).add(new THREE.Vector3(0, lift * 1.1, 0))
+    );
+    const dau = new THREE.Mesh(new THREE.TubeGeometry(curlCurve, 12, Math.max(0.06, scale * 0.014), 6, false), roofTrimMat);
+    group.add(dau);
+  }
+
+  // Bờ nóc chính + 2 đầu kìm cuộn lên ở hai đầu
+  const ridgeR = Math.max(0.12, scale * 0.022);
+  const ridge = new THREE.Mesh(new THREE.CylinderGeometry(ridgeR, ridgeR, rw * 2 + ridgeR * 2, 8), roofRidgeMat);
+  ridge.rotation.z = Math.PI / 2;
+  ridge.position.y = height + ridgeR * 0.4;
+  ridge.castShadow = true;
+  group.add(ridge);
+
+  for (const side of [-1, 1]) {
+    const endX = side * (rw + ridgeR);
+    const kim = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(endX, height + ridgeR * 0.4, 0),
+      new THREE.Vector3(endX + side * scale * 0.08, height + ridgeR, 0),
+      new THREE.Vector3(endX + side * scale * 0.03, height + scale * 0.12, 0)
+    );
+    const kimMesh = new THREE.Mesh(new THREE.TubeGeometry(kim, 12, ridgeR * 0.9, 6, false), roofTrimMat);
+    group.add(kimMesh);
+  }
+
+  return group;
 }
 
 export class TempleWorld {
   public scene: THREE.Scene;
   public collisionBoxes: CollisionBox[] = [];
+  // Vật cản hình tròn (hồ sen, gốc bồ đề, lư hương)
+  public collisionCircles: { x: number; z: number; r: number }[] = [];
+  // Vị trí các bồ đoàn để nhân vật đến quỳ lạy
+  public cushionSpots: { x: number; z: number }[] = [];
+  // Khối che khuất camera (raycast để camera không xuyên qua vật thể)
+  public cameraBlockers: THREE.Object3D[] = [];
 
   // Tương tác
   public bellMesh: THREE.Group | null = null;
@@ -103,6 +195,8 @@ export class TempleWorld {
   public incenseUrnGroup: THREE.Group | null = null;
   public altarGroup: THREE.Group | null = null;
   public pondGroup: THREE.Group | null = null;
+  // Nhóm chứa đèn hoa đăng (dùng để raycast khi chạm/bấm vào đèn)
+  public lanternLayer = new THREE.Group();
 
   // Đồ vật đồng bộ
   private incenseMeshMap = new Map<string, THREE.Group>();
@@ -114,6 +208,8 @@ export class TempleWorld {
   public hemiLight: THREE.HemisphereLight | null = null;
   public nightLights: THREE.PointLight[] = [];
   public lanternsGlow: THREE.PointLight[] = [];
+  // Vật liệu phát sáng (đèn đá, đèn lồng) sáng rực hơn về đêm
+  private glowMaterials: THREE.MeshStandardMaterial[] = [];
   public isNight = false;
 
   private skyMesh: THREE.Mesh | null = null;
@@ -145,6 +241,7 @@ export class TempleWorld {
   }
 
   private buildWorld() {
+    this.scene.add(this.lanternLayer);
     this.setupLighting();
     this.buildSkyDome();
     this.buildMountainRanges();
@@ -157,17 +254,43 @@ export class TempleWorld {
     this.buildPerimeterWalls();
     this.buildDecorationsAndBonsai();
     this.setupSmokeAndPetals();
+    this.enableShadows();
+  }
+
+  private enableShadows() {
+    const worldPos = new THREE.Vector3();
+    this.scene.updateMatrixWorld(true);
+    this.scene.traverse(obj => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || (obj as THREE.InstancedMesh).isInstancedMesh) return;
+      const mat = mesh.material as THREE.Material;
+      if (!mat || (mat as THREE.ShaderMaterial).isShaderMaterial || mat.transparent) return;
+      const geoType = mesh.geometry.type;
+      if (geoType === 'PlaneGeometry' || geoType === 'CircleGeometry') {
+        mesh.receiveShadow = true;
+        return;
+      }
+      mesh.getWorldPosition(worldPos);
+      if (Math.hypot(worldPos.x, worldPos.z - 8) > 70) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.geometry.computeBoundingSphere();
+      const r = (mesh.geometry.boundingSphere?.radius || 0) * Math.max(mesh.scale.x, mesh.scale.y, mesh.scale.z);
+      if (r > 0.45 && geoType !== 'TubeGeometry') this.cameraBlockers.push(mesh);
+    });
   }
 
   // ===================== 1. ÁNH SÁNG BAN NGÀY & ĐÊM =====================
   private setupLighting() {
     // HemisphereLight: trời #fff1d6, đất #7a6a4a, cường độ 0.9
-    this.hemiLight = new THREE.HemisphereLight(0xfff1d6, 0x7a6a4a, 0.9);
+    this.hemiLight = new THREE.HemisphereLight(0xfff1d6, 0x6b5a3a, 0.55);
+    // Ánh sáng môi trường (RoomEnvironment) chỉ để kim loại phản chiếu, không làm cảnh bị chói
+    this.scene.environmentIntensity = 0.35;
     this.scene.add(this.hemiLight);
 
     // DirectionalLight: nắng chiều vàng ấm #ffd9a0, cường độ 2.5, từ góc thấp phía tây để tạo bóng dài
-    this.sunLight = new THREE.DirectionalLight(0xffd9a0, 2.5);
-    this.sunLight.position.set(45, 28, 38);
+    this.sunLight = new THREE.DirectionalLight(0xffd9a0, 2.2);
+    this.sunLight.position.set(-38, 34, 30);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.width = 2048;
     this.sunLight.shadow.mapSize.height = 2048;
@@ -185,16 +308,16 @@ export class TempleWorld {
     this.scene.add(this.sunLight);
 
     // Fog: màu trùng màu chân trời (#ffe3b3 ban ngày), near 60, far 250
-    this.scene.fog = new THREE.Fog(0xffe3b3, 60, 250);
+    this.scene.fog = new THREE.Fog(0xdfe6df, 90, 520);
   }
 
   // ===================== 2. BẦU TRỜI GRADIENT (SHADER MATERIAL) =====================
   private buildSkyDome() {
-    const skyGeo = new THREE.SphereGeometry(240, 32, 16);
+    const skyGeo = new THREE.SphereGeometry(400, 32, 16);
     this.skyMaterial = new THREE.ShaderMaterial({
       uniforms: {
         topColor: { value: new THREE.Color(0x6fa8dc) },    // Xanh thiên thanh
-        bottomColor: { value: new THREE.Color(0xffe3b3) }, // Vàng hoàng hôn chân trời
+        bottomColor: { value: new THREE.Color(0xf3e6cc) }, // Chân trời vàng nhạt pha sương
         offset: { value: 20.0 },
         exponent: { value: 0.65 }
       },
@@ -215,6 +338,7 @@ export class TempleWorld {
         void main() {
           float h = normalize(vWorldPosition + offset).y;
           gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+          #include <colorspace_fragment>
         }
       `,
       side: THREE.BackSide,
@@ -269,24 +393,24 @@ export class TempleWorld {
 
     const sunTex = new THREE.CanvasTexture(sunCanvas);
     const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: sunTex, depthWrite: false }));
-    sunSprite.position.set(80, 50, 70);
+    sunSprite.position.set(-150, 95, 120);
     sunSprite.scale.set(30, 30, 1);
     this.scene.add(sunSprite);
 
     // Mặt trăng rằm và ngàn sao ban đêm
     this.moonGroup = new THREE.Group();
     const moonMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(6, 16, 16),
-      new THREE.MeshBasicMaterial({ color: 0xfffae6 })
+      new THREE.SphereGeometry(9, 24, 24),
+      new THREE.MeshBasicMaterial({ color: 0xfffae6, fog: false })
     );
     this.moonGroup.add(moonMesh);
 
     // Hào quang trăng
     const moonAura = new THREE.Sprite(new THREE.SpriteMaterial({ map: sunTex, color: 0xc7d2fe, depthWrite: false }));
-    moonAura.scale.set(24, 24, 1);
+    moonAura.scale.set(48, 48, 1);
     this.moonGroup.add(moonAura);
 
-    this.moonGroup.position.set(-60, 75, -90);
+    this.moonGroup.position.set(-110, 140, -220);
     this.moonGroup.visible = false;
     this.scene.add(this.moonGroup);
 
@@ -296,7 +420,7 @@ export class TempleWorld {
     for (let i = 0; i < starCount; i++) {
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.random() * Math.PI * 0.45; // Nửa cầu trên
-      const r = 230;
+      const r = 380;
       starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
       starPos[i * 3 + 1] = r * Math.cos(phi) + 15;
       starPos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
@@ -305,7 +429,7 @@ export class TempleWorld {
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
     this.starsPoints = new THREE.Points(
       starGeo,
-      new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, transparent: true, opacity: 0.85 })
+      new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: true, transparent: true, opacity: 0.9, fog: false })
     );
     this.starsPoints.visible = false;
     this.scene.add(this.starsPoints);
@@ -313,44 +437,38 @@ export class TempleWorld {
 
   // ===================== 3. NÚI NON LOW-POLY HÒA VÀO SƯƠNG =====================
   private buildMountainRanges() {
-    // 3 Lớp đồi núi low-poly nhấp nhô ở xa (150-240 đơn vị), flatShading, xanh nhạt dần
+    // 3 lớp đồi núi tròn nhấp nhô ở xa, xanh nhạt dần theo khoảng cách để hòa vào sương
     const layers = [
-      { dist: 160, count: 9, baseRadius: 28, height: 35, color: 0x7d9a8a, yOff: 10 },
-      { dist: 195, count: 11, baseRadius: 36, height: 48, color: 0x8daab3, yOff: 14 },
-      { dist: 230, count: 12, baseRadius: 45, height: 62, color: 0xa9bccb, yOff: 18 }
+      { dist: 150, count: 10, radius: 34, height: 26, color: 0x6f8f72 },
+      { dist: 205, count: 12, radius: 46, height: 40, color: 0x7f9ea0 },
+      { dist: 265, count: 14, radius: 58, height: 58, color: 0x9fb4c0 }
     ];
 
     for (const lyr of layers) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: lyr.color,
-        roughness: 0.95,
-        flatShading: true
-      });
+      const mat = new THREE.MeshStandardMaterial({ color: lyr.color, roughness: 1, flatShading: true });
 
       for (let i = 0; i < lyr.count; i++) {
-        // Phân bố núi vòng quanh phía Bắc, Đông và Tây
-        const angle = -Math.PI * 0.85 + (i / (lyr.count - 1)) * Math.PI * 1.7;
-        const x = Math.sin(angle) * lyr.dist + (Math.random() - 0.5) * 15;
-        const z = -Math.cos(angle) * lyr.dist - 30 + (Math.random() - 0.5) * 15;
+        // Bao quanh phía bắc, đông, tây (phía nam là cổng chùa nên để thoáng hơn)
+        const angle = -Math.PI * 0.9 + (i / (lyr.count - 1)) * Math.PI * 1.8 + (Math.random() - 0.5) * 0.12;
+        const x = Math.sin(angle) * lyr.dist;
+        const z = -Math.cos(angle) * lyr.dist + 10;
 
-        const cone = new THREE.ConeGeometry(
-          lyr.baseRadius * (0.8 + Math.random() * 0.4),
-          lyr.height * (0.85 + Math.random() * 0.35),
-          7
-        );
-
-        // Nhiễu đỉnh low-poly tự nhiên
-        const pos = cone.attributes.position;
+        const geo = new THREE.IcosahedronGeometry(1, 2);
+        const pos = geo.attributes.position;
+        const noise = new Map<string, number>();
         for (let v = 0; v < pos.count; v++) {
-          if (pos.getY(v) > 2) {
-            pos.setX(v, pos.getX(v) + (Math.random() - 0.5) * 4);
-            pos.setZ(v, pos.getZ(v) + (Math.random() - 0.5) * 4);
-          }
+          const key = `${pos.getX(v).toFixed(3)},${pos.getY(v).toFixed(3)},${pos.getZ(v).toFixed(3)}`;
+          if (!noise.has(key)) noise.set(key, 0.84 + Math.random() * 0.28);
+          const n = noise.get(key)!;
+          pos.setXYZ(v, pos.getX(v) * n, pos.getY(v) * n, pos.getZ(v) * n);
         }
-        cone.computeVertexNormals();
+        geo.computeVertexNormals();
 
-        const mesh = new THREE.Mesh(cone, mat);
-        mesh.position.set(x, lyr.yOff + lyr.height * 0.35, z);
+        const mesh = new THREE.Mesh(geo, mat);
+        const r = lyr.radius * (0.75 + Math.random() * 0.5);
+        mesh.scale.set(r * 1.4, lyr.height * (0.7 + Math.random() * 0.5), r);
+        mesh.rotation.y = angle;
+        mesh.position.set(x, -lyr.height * 0.12, z);
         this.scene.add(mesh);
       }
     }
@@ -359,11 +477,10 @@ export class TempleWorld {
   // ===================== 4. MẶT ĐẤT, SÂN CHÙA & BỤI CỎ INSTANCED =====================
   private buildGroundAndFlora() {
     // 1. Mặt cỏ xanh (#6f9a4a) rộng lớn bao bọc
-    const grassGroundGeo = new THREE.PlaneGeometry(280, 280, 16, 16);
+    const grassGroundGeo = new THREE.PlaneGeometry(700, 700, 1, 1);
     const grassGroundMat = new THREE.MeshStandardMaterial({
-      color: 0x6f9a4a,
-      roughness: 0.92,
-      metalness: 0.05
+      map: getGrassTexture(),
+      roughness: 0.95
     });
     const grassGround = new THREE.Mesh(grassGroundGeo, grassGroundMat);
     grassGround.rotation.x = -Math.PI / 2;
@@ -494,42 +611,43 @@ export class TempleWorld {
   // Bồ đoàn tròn màu vàng nghệ may gờ nổi và rốn bồ đoàn (đúng chuẩn ảnh mẫu)
   private createRoundCushion(x: number, z: number) {
     const group = new THREE.Group();
-    const geo = new THREE.CylinderGeometry(0.52, 0.54, 0.13, 20);
+    const geo = new THREE.CylinderGeometry(0.46, 0.5, 0.16, 28);
     const mat = new THREE.MeshStandardMaterial({
-      color: 0xdeb841, // Vàng nghệ thiền sáng ấm
-      roughness: 0.82
+      color: 0xc98f2a, // Vàng nghệ trầm
+      roughness: 0.9
     });
     const cushion = new THREE.Mesh(geo, mat);
-    cushion.position.y = 0.065;
+    cushion.position.y = 0.08;
     cushion.receiveShadow = true;
     group.add(cushion);
 
     // Điểm nhấn rốn bồ đoàn ở tâm
     const button = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.12, 0.02, 12),
-      new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.9 })
+      new THREE.CylinderGeometry(0.07, 0.07, 0.02, 12),
+      new THREE.MeshStandardMaterial({ color: 0x7c2d12, roughness: 0.9 })
     );
-    button.position.y = 0.135;
+    button.position.y = 0.165;
     group.add(button);
 
     // Đường gờ viền may bo tròn
     const rim = new THREE.Mesh(
-      new THREE.TorusGeometry(0.51, 0.025, 8, 20),
-      new THREE.MeshStandardMaterial({ color: 0xc49b28, roughness: 0.85 })
+      new THREE.TorusGeometry(0.46, 0.045, 8, 28),
+      new THREE.MeshStandardMaterial({ color: 0xa8741f, roughness: 0.9 })
     );
     rim.rotation.x = Math.PI / 2;
-    rim.position.y = 0.13;
+    rim.position.y = 0.155;
     group.add(rim);
 
     group.position.set(x, 0, z);
     this.scene.add(group);
+    this.cushionSpots.push({ x, z });
   }
 
   // Đèn đá chùa đích thực: đế cánh sen nở, thân trụ đá, lồng đèn tròn sáng vàng, mái chóp nón búp sen
   private createAuthenticStoneLantern(x: number, z: number) {
     const group = new THREE.Group();
     const stoneMat = new THREE.MeshStandardMaterial({
-      color: 0x9ca3af, // Xám đá tự nhiên
+      color: 0x8c867a, // Xám đá ấm tự nhiên
       roughness: 0.88
     });
 
@@ -540,7 +658,8 @@ export class TempleWorld {
 
     // Bệ sen nở ở chân đế
     for (let p = 0; p < 8; p++) {
-      const petal = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.28, 5), stoneMat);
+      const petal = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), stoneMat);
+      petal.scale.set(1, 0.6, 1.4);
       const pa = (p * Math.PI * 2) / 8;
       petal.position.set(Math.cos(pa) * 0.52, 0.22, Math.sin(pa) * 0.52);
       petal.rotation.z = Math.cos(pa) * 0.45;
@@ -582,11 +701,7 @@ export class TempleWorld {
     finial.position.y = 2.28;
     group.add(finial);
 
-    // Ánh sáng phát ra
-    const pLight = new THREE.PointLight(0xffb74d, 0.4, 8);
-    pLight.position.set(0, 1.6, 0);
-    group.add(pLight);
-    this.nightLights.push(pLight);
+    this.glowMaterials.push(lampLightCore.material as THREE.MeshStandardMaterial);
 
     group.position.set(x, 0, z);
     this.scene.add(group);
@@ -603,7 +718,7 @@ export class TempleWorld {
   // Bệ đá cao với chậu men lam và cây cảnh hoa mai vàng rực rỡ / tán xanh (như trong ảnh mẫu)
   private createPedestalBonsai(x: number, z: number, type: 'yellow_blossom' | 'green_foliage') {
     const group = new THREE.Group();
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.85 });
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8c867a, roughness: 0.9 });
     const potTex = createBonsaiPotTexture();
     const potMat = new THREE.MeshStandardMaterial({ map: potTex, roughness: 0.35, metalness: 0.1 });
     const barkMat = new THREE.MeshStandardMaterial({ color: 0x543d2b, roughness: 0.95 });
@@ -732,21 +847,32 @@ export class TempleWorld {
       this.incenseUrnGroup.add(leg);
     }
 
-    // Thân lư tròn phình bụng
-    const body = new THREE.Mesh(new THREE.SphereGeometry(1.05, 24, 16), bronzeMat);
-    body.position.y = 1.05;
-    body.scale.set(1.15, 0.9, 1.15);
+    // Thân lư tròn phình bụng, miệng mở để thấy lòng tro và nén hương
+    const bodyProfile = [
+      new THREE.Vector2(0.0, 0.45),
+      new THREE.Vector2(0.7, 0.47),
+      new THREE.Vector2(1.12, 0.75),
+      new THREE.Vector2(1.28, 1.08),
+      new THREE.Vector2(1.18, 1.38),
+      new THREE.Vector2(1.0, 1.52),
+      new THREE.Vector2(1.06, 1.64)
+    ];
+    const body = new THREE.Mesh(new THREE.LatheGeometry(bodyProfile, 36), bronzeMat);
     body.castShadow = true;
     this.incenseUrnGroup.add(body);
 
-    // Cổ và miệng lư hương loe rộng
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.98, 1.1, 0.45, 24), bronzeMat);
-    neck.position.y = 1.45;
-    this.incenseUrnGroup.add(neck);
+    // Đai hoa văn vàng quanh bụng lư
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(1.27, 0.035, 6, 48),
+      new THREE.MeshStandardMaterial({ color: 0xd4a537, metalness: 0.85, roughness: 0.3 })
+    );
+    band.rotation.x = Math.PI / 2;
+    band.position.y = 1.1;
+    this.incenseUrnGroup.add(band);
 
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(1.08, 0.1, 8, 24), bronzeMat);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.07, 8, 36), bronzeMat);
     rim.rotation.x = Math.PI / 2;
-    rim.position.y = 1.68;
+    rim.position.y = 1.65;
     this.incenseUrnGroup.add(rim);
 
     // Hai quai rồng uốn lượn hai bên sườn
@@ -754,33 +880,27 @@ export class TempleWorld {
       const handle = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.08, 8, 16, Math.PI * 1.2), bronzeMat);
       handle.rotation.y = Math.PI / 2;
       handle.rotation.z = side * (Math.PI / 2.2);
-      handle.position.set(side * 1.25, 1.2, 0);
+      handle.position.set(side * 1.32, 1.3, 0);
       this.incenseUrnGroup.add(handle);
     }
 
     // Lòng tro cát cắm hương
     const ash = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.96, 0.96, 0.1, 24),
-      new THREE.MeshStandardMaterial({ color: 0x948e85, roughness: 1.0 })
+      new THREE.CylinderGeometry(1.0, 1.0, 0.06, 32),
+      new THREE.MeshStandardMaterial({ color: 0x8f877c, roughness: 1.0 })
     );
-    ash.position.y = 1.58;
+    ash.position.y = 1.6;
     this.incenseUrnGroup.add(ash);
 
     // Đốm lửa than hồng le lói
-    const emberLight = new THREE.PointLight(0xff5511, 0.6, 3.5);
-    emberLight.position.set(0, 1.7, 0);
+    const emberLight = new THREE.PointLight(0xff6a2a, 0.25, 2.5);
+    emberLight.position.set(0, 2.1, 0);
     this.incenseUrnGroup.add(emberLight);
 
     this.incenseUrnGroup.position.set(x, 0, z);
     this.scene.add(this.incenseUrnGroup);
 
-    this.collisionBoxes.push({
-      minX: x - 1.3,
-      maxX: x + 1.3,
-      minZ: z - 1.3,
-      maxZ: z + 1.3,
-      type: 'impassable'
-    });
+    this.collisionCircles.push({ x, z, r: 1.35 });
   }
 
   // ===================== 6. CỔNG TAM QUAN MÁI CONG =====================
@@ -793,6 +913,7 @@ export class TempleWorld {
     });
     const roofMat = new THREE.MeshStandardMaterial({
       map: getVietnameseCurvedRoofTexture(),
+      side: THREE.DoubleSide,
       roughness: 0.55,
       metalness: 0.1
     });
@@ -823,16 +944,11 @@ export class TempleWorld {
     gate.add(plaque);
 
     // MÁI CONG CỔNG TAM QUAN (Dùng makeCurvedRoofGeometry)
-    const gateRoofGeo = makeCurvedRoofGeometry(15.2, 4.2, 1.8, 1.6);
-    const gateRoof = new THREE.Mesh(gateRoofGeo, roofMat);
+    const gateRoof = makeRoofGroup(15.2, 4.2, 1.8, 1.6, roofMat);
     gateRoof.position.set(0, 5.8, 0);
     gateRoof.castShadow = true;
     gate.add(gateRoof);
 
-    // Bờ nóc viền vàng kim
-    const ridge = new THREE.Mesh(new THREE.BoxGeometry(6.5, 0.35, 0.4), new THREE.MeshStandardMaterial({ color: 0xdeb841 }));
-    ridge.position.set(0, 7.6, 0);
-    gate.add(ridge);
 
     gate.position.set(0, 0, 36);
     this.scene.add(gate);
@@ -856,6 +972,7 @@ export class TempleWorld {
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8d9092, roughness: 0.85 });
     const roofMat = new THREE.MeshStandardMaterial({
       map: getVietnameseCurvedRoofTexture(),
+      side: THREE.DoubleSide,
       roughness: 0.55,
       metalness: 0.1
     });
@@ -924,8 +1041,7 @@ export class TempleWorld {
 
     // 3. CHÍNH ĐIỆN 2 TẦNG MÁI CHỒNG DIÊM CONG VÚT
     // Tầng mái 1 (Mái hạ dưới rộng 26 x 20m)
-    const lowerRoofGeo = makeCurvedRoofGeometry(26.5, 20.5, 2.6, 1.8);
-    const lowerRoof = new THREE.Mesh(lowerRoofGeo, roofMat);
+    const lowerRoof = makeRoofGroup(26.5, 20.5, 2.6, 1.8, roofMat);
     lowerRoof.position.set(0, 6.5, -12);
     lowerRoof.castShadow = true;
     hall.add(lowerRoof);
@@ -942,8 +1058,7 @@ export class TempleWorld {
     hall.add(hp);
 
     // Tầng mái 2 (Mái thượng trên 19.5 x 15m)
-    const upperRoofGeo = makeCurvedRoofGeometry(20.0, 15.5, 2.8, 2.2);
-    const upperRoof = new THREE.Mesh(upperRoofGeo, roofMat);
+    const upperRoof = makeRoofGroup(20.0, 15.5, 2.8, 2.2, roofMat);
     upperRoof.position.set(0, 9.2, -12);
     upperRoof.castShadow = true;
     hall.add(upperRoof);
@@ -1046,14 +1161,18 @@ export class TempleWorld {
     lanternMesh.position.y = -0.7;
     group.add(lanternMesh);
 
+    const capMat = new THREE.MeshStandardMaterial({ color: 0xd4a537, metalness: 0.7, roughness: 0.3 });
+    for (const cy of [-0.27, -1.13]) {
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 12), capMat);
+      cap.position.y = cy;
+      group.add(cap);
+    }
+
     const tassel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.08, 0.35), new THREE.MeshBasicMaterial({ color: 0xffd54f }));
     tassel.position.y = -1.15;
     group.add(tassel);
 
-    const light = new THREE.PointLight(0xff5511, 0.2, 5);
-    light.position.y = -0.7;
-    group.add(light);
-    this.lanternsGlow.push(light);
+    this.glowMaterials.push(lanternMesh.material as THREE.MeshStandardMaterial);
 
     group.position.set(x, y, z);
     parent.add(group);
@@ -1290,105 +1409,155 @@ export class TempleWorld {
     }
     altar.add(pedestal);
 
-    // TƯỢNG PHẬT NGỒI KIẾT GIÀ (Thân tượng cao ~4.5m uy nghi)
+    // Đế đài sen: trụ tròn + mặt đài
+    const pedestalBase = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.45, 0.5, 32), goldBuddhaMat);
+    pedestalBase.position.set(0, 1.45, -0.6);
+    altar.add(pedestalBase);
+    const pedestalTop = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.25, 0.18, 32), goldBuddhaMat);
+    pedestalTop.position.set(0, 1.95, -0.6);
+    altar.add(pedestalTop);
+
+    // TƯỢNG PHẬT NGỒI KIẾT GIÀ, THỦ ẤN THIỀN ĐỊNH
     const buddha = new THREE.Group();
-    buddha.position.set(0, 2.0, -0.6);
+    buddha.position.set(0, 2.04, -0.6);
 
-    // 1. Chân xếp bằng kiết già (Capsule/Torus nằm ngang vững chãi)
-    const lapGeo = new THREE.TorusGeometry(0.95, 0.35, 12, 24, Math.PI);
-    const lap = new THREE.Mesh(lapGeo, goldBuddhaMat);
-    lap.rotation.x = Math.PI / 2;
-    lap.position.y = 0.3;
+    // Nối 2 điểm bằng khối capsule (dùng cho tay)
+    const limb = (from: THREE.Vector3, to: THREE.Vector3, r: number) => {
+      const dir = new THREE.Vector3().subVectors(to, from);
+      const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(0.01, dir.length() - r), 6, 12), goldBuddhaMat);
+      mesh.position.copy(from).add(to).multiplyScalar(0.5);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      buddha.add(mesh);
+    };
+
+    // 1. Chân xếp bằng: khối đùi nằm ngang rộng, hai bàn chân ngửa trên đùi
+    const lap = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 1.35, 8, 20), goldBuddhaMat);
+    lap.rotation.z = Math.PI / 2;
+    lap.scale.set(1, 1, 1.45);
+    lap.position.set(0, 0.36, 0.12);
     buddha.add(lap);
-
-    // Bàn chân lộ diện đặt ngửa lên đùi
     for (const side of [-1, 1]) {
-      const sole = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.22), goldBuddhaMat);
-      sole.position.set(side * 0.45, 0.4, 0.4);
-      sole.rotation.x = 0.2;
+      const sole = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 10), goldBuddhaMat);
+      sole.scale.set(1.3, 0.45, 0.8);
+      sole.position.set(side * 0.42, 0.7, 0.42);
+      sole.rotation.y = side * 0.5;
       buddha.add(sole);
     }
 
-    // 2. Thân trên trang nghiêm khoác áo cà sa
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.9, 1.6, 16), goldBuddhaMat);
-    torso.position.y = 1.15;
+    // 2. Thân trên tiện tròn (Lathe), vai xuôi, ngực đầy đặn
+    const torsoProfile = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.78, 0.0),
+      new THREE.Vector2(0.82, 0.35),
+      new THREE.Vector2(0.74, 0.95),
+      new THREE.Vector2(0.7, 1.32),
+      new THREE.Vector2(0.55, 1.58),
+      new THREE.Vector2(0.26, 1.7),
+      new THREE.Vector2(0.0, 1.72)
+    ];
+    const torso = new THREE.Mesh(new THREE.LatheGeometry(torsoProfile, 32), goldBuddhaMat);
+    torso.scale.set(1, 1, 0.68);
+    torso.position.y = 0.42;
     buddha.add(torso);
 
-    // Dải y cà sa vắt chéo qua vai trái
-    const sash = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.08, 8, 20), goldBuddhaMat);
-    sash.rotation.x = Math.PI / 3;
-    sash.rotation.y = Math.PI / 6;
-    sash.position.y = 1.35;
+    // Nếp y cà sa vắt chéo ngực
+    const sash = new THREE.Mesh(new THREE.TorusGeometry(0.66, 0.045, 8, 32), goldBuddhaMat);
+    sash.scale.set(1, 1, 0.72);
+    sash.rotation.set(Math.PI / 2.4, 0, -0.55);
+    sash.position.set(0.05, 1.35, 0.02);
     buddha.add(sash);
 
-    // 3. Hai cánh tay và bàn tay đặt trong lòng (Thủ ấn thiền định - Dhyana mudra)
+    // 3. Hai tay: vai -> khuỷu -> bàn tay chồng lên nhau trong lòng (thiền định ấn)
     for (const side of [-1, 1]) {
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.9), goldBuddhaMat);
-      arm.position.set(side * 0.72, 1.1, 0.15);
-      arm.rotation.z = side * 0.45;
-      arm.rotation.x = 0.35;
-      buddha.add(arm);
+      const shoulder = new THREE.Vector3(side * 0.66, 1.88, 0.0);
+      const elbow = new THREE.Vector3(side * 0.82, 1.1, 0.22);
+      const wrist = new THREE.Vector3(side * 0.24, 0.84, 0.58);
+      limb(shoulder, elbow, 0.19);
+      limb(elbow, wrist, 0.15);
     }
-
-    // Hai bàn tay đan đặt ngửa trong lòng
-    const hands = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.14, 0.32), goldBuddhaMat);
-    hands.position.set(0, 0.58, 0.52);
+    const hands = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), goldBuddhaMat);
+    hands.scale.set(1.1, 0.4, 0.75);
+    hands.position.set(0, 0.84, 0.6);
     buddha.add(hands);
 
-    // 4. Đầu tượng, búi tóc nhục kế (Ushnisha) và tai dài
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.52, 18, 18), goldBuddhaMat);
-    head.position.y = 2.25;
+    // 4. Cổ, đầu, tóc xoắn ốc, nhục kế, tai dài
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.3, 16), goldBuddhaMat);
+    neck.position.y = 2.22;
+    buddha.add(neck);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 24), goldBuddhaMat);
+    head.scale.set(0.92, 1.06, 0.95);
+    head.position.y = 2.66;
     buddha.add(head);
 
-    // Nhục kế trên đỉnh đầu
-    const ushnisha = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 14), goldBuddhaMat);
-    ushnisha.position.y = 2.82;
-    buddha.add(ushnisha);
-
-    // Nốt tóc xoắn nhỏ trên đầu
-    for (let i = 0; i < 28; i++) {
-      const curlNode = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 6), goldBuddhaMat);
-      const ca = (i * Math.PI * 2) / 14;
-      const cr = i < 14 ? 0.45 : 0.28;
-      const cy = i < 14 ? 2.35 : 2.65;
-      curlNode.position.set(Math.cos(ca) * cr, cy, Math.sin(ca) * cr);
-      buddha.add(curlNode);
+    const curlCount = 90;
+    const curls = new THREE.InstancedMesh(new THREE.SphereGeometry(0.06, 6, 5), goldBuddhaMat, curlCount);
+    const curlDummy = new THREE.Object3D();
+    for (let i = 0; i < curlCount; i++) {
+      // Phân bố đều trên chỏm đầu (bán cầu trên, lệch về phía sau trán)
+      const yN = 0.25 + (i / curlCount) * 0.75;
+      const ring = Math.sqrt(1 - yN * yN);
+      const a = i * 2.39996;
+      curlDummy.position.set(Math.cos(a) * ring * 0.47, 2.68 + yN * 0.52, Math.sin(a) * ring * 0.47 - 0.02);
+      curlDummy.updateMatrix();
+      curls.setMatrixAt(i, curlDummy.matrix);
     }
+    buddha.add(curls);
 
-    // Đôi tai dài thùy châu chạm vai
+    const ushnisha = new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 12), goldBuddhaMat);
+    ushnisha.position.y = 3.2;
+    buddha.add(ushnisha);
+    const jewel = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.22, 10), goldBuddhaMat);
+    jewel.position.y = 3.46;
+    buddha.add(jewel);
+
     for (const side of [-1, 1]) {
-      const ear = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.48, 8), goldBuddhaMat);
-      ear.position.set(side * 0.55, 2.15, 0.05);
-      ear.rotation.z = side * 0.15;
+      const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.42, 4, 8), goldBuddhaMat);
+      ear.position.set(side * 0.47, 2.52, 0.0);
+      ear.scale.set(0.7, 1, 1);
       buddha.add(ear);
     }
 
-    // 5. HÀO QUANG TRÒN VÀNG KIM PHÁT SÁNG PHÍA SAU
-    const haloGroup = new THREE.Group();
-    haloGroup.position.set(0, 2.35, -0.45);
+    // Nét mặt: mắt khép hờ, chấm bạch hào giữa trán, môi mỉm cười
+    const faceMat = new THREE.MeshStandardMaterial({ color: 0x5c3b12, roughness: 0.6, metalness: 0.3 });
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.013, 6, 12, Math.PI), faceMat);
+      eye.position.set(side * 0.17, 2.68, 0.44);
+      eye.rotation.z = Math.PI;
+      buddha.add(eye);
+    }
+    const urna = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), faceMat);
+    urna.position.set(0, 2.84, 0.46);
+    buddha.add(urna);
+    const lips = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.014, 6, 12, Math.PI), faceMat);
+    lips.position.set(0, 2.44, 0.45);
+    lips.rotation.z = Math.PI;
+    buddha.add(lips);
 
-    const haloDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(1.65, 32),
-      new THREE.MeshStandardMaterial({
-        color: 0xffe082,
-        emissive: 0xffca28,
-        emissiveIntensity: 0.9,
-        side: THREE.DoubleSide
-      })
+    // 5. HÀO QUANG: vầng đầu + vầng thân (texture tia sáng, phát sáng cộng màu)
+    const haloTex = createHaloTexture();
+    const headHalo = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.9, 2.9),
+      new THREE.MeshBasicMaterial({ map: haloTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.9 })
     );
-    haloGroup.add(haloDisc);
+    headHalo.position.set(0, 2.72, -0.55);
+    buddha.add(headHalo);
+    this.buddhaHalo = headHalo;
 
-    const haloRim = new THREE.Mesh(
-      new THREE.RingGeometry(1.65, 1.85, 32),
-      new THREE.MeshStandardMaterial({ color: 0xdeb841, metalness: 0.9, roughness: 0.2, side: THREE.DoubleSide })
+    const bodyHalo = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.6, 4.6),
+      new THREE.MeshBasicMaterial({ map: haloTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.45 })
     );
-    haloGroup.add(haloRim);
+    bodyHalo.position.set(0, 1.45, -0.6);
+    buddha.add(bodyHalo);
 
-    this.buddhaHalo = haloDisc;
-    buddha.add(haloGroup);
+    // Vành hào quang chạm vàng phía sau
+    const haloRim = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.05, 8, 64), goldBuddhaMat);
+    haloRim.position.set(0, 2.72, -0.58);
+    buddha.add(haloRim);
 
     const haloLight = new THREE.PointLight(0xffd54f, 1.6, 9);
-    haloLight.position.set(0, 2.4, 0.4);
+    haloLight.position.set(0, 2.4, 1.2);
     buddha.add(haloLight);
 
     altar.add(buddha);
@@ -1403,7 +1572,8 @@ export class TempleWorld {
 
     const woodMat = new THREE.MeshStandardMaterial({ map: getLacqueredWoodTexture(), roughness: 0.65 });
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0x828486, roughness: 0.88 });
-    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(), roughness: 0.55 });
+    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(),
+      side: THREE.DoubleSide, roughness: 0.55 });
     const goldMat = new THREE.MeshStandardMaterial({ color: 0xdeb841, metalness: 0.85, roughness: 0.25 });
 
     // 1. Nền đá 2 tầng kiên cố
@@ -1433,8 +1603,7 @@ export class TempleWorld {
     pavilion.add(beamLow);
 
     // Mái tầng 1 cong vút
-    const lowerRoofGeo = makeCurvedRoofGeometry(7.2, 7.2, 2.2, 1.8);
-    const lowerRoof = new THREE.Mesh(lowerRoofGeo, roofMat);
+    const lowerRoof = makeRoofGroup(7.2, 7.2, 2.2, 1.8, roofMat);
     lowerRoof.position.set(0, 5.1, 0);
     lowerRoof.castShadow = true;
     pavilion.add(lowerRoof);
@@ -1507,8 +1676,7 @@ export class TempleWorld {
     pavilion.add(beamUpper);
 
     // Mái thượng tầng 2 cong vút
-    const upperRoofGeo = makeCurvedRoofGeometry(5.8, 5.8, 2.4, 2.0);
-    const upperRoof = new THREE.Mesh(upperRoofGeo, roofMat);
+    const upperRoof = makeRoofGroup(5.8, 5.8, 2.4, 2.0, roofMat);
     upperRoof.position.set(0, 9.0, 0);
     upperRoof.castShadow = true;
     pavilion.add(upperRoof);
@@ -1559,6 +1727,18 @@ export class TempleWorld {
     pavilion.add(strikerGroup);
     this.strikerMesh = strikerGroup;
 
+    const ropeMat = new THREE.MeshStandardMaterial({ color: 0xc2a26b, roughness: 0.95 });
+    const ropeCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(1.9, 7.45, 0),
+      new THREE.Vector3(2.15, 4.5, 0),
+      new THREE.Vector3(2.2, 1.6, 0)
+    ]);
+    const rope = new THREE.Mesh(new THREE.TubeGeometry(ropeCurve, 16, 0.03, 6, false), ropeMat);
+    pavilion.add(rope);
+    const ropeKnot = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), ropeMat);
+    ropeKnot.position.set(2.2, 1.55, 0);
+    pavilion.add(ropeKnot);
+
     this.scene.add(pavilion);
 
     this.collisionBoxes.push({
@@ -1569,6 +1749,8 @@ export class TempleWorld {
       type: 'step',
       height: 0.6
     });
+    // Trống bát nhã giữa lầu (trục trống nằm theo trục z)
+    this.collisionBoxes.push({ minX: 16.9, maxX: 19.1, minZ: 7.2, maxZ: 8.8, type: 'impassable' });
   }
 
   // ===================== 10. HỒ SEN, CÁ KOI & TƯỢNG QUAN ÂM BẠCH NGỌC =====================
@@ -1585,11 +1767,15 @@ export class TempleWorld {
 
     // Viền đá tự nhiên
     const rimStoneMat = new THREE.MeshStandardMaterial({ color: 0x6e7072, roughness: 0.95 });
-    for (let i = 0; i < 24; i++) {
-      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8, 0), rimStoneMat);
-      const angle = (i * Math.PI * 2) / 24;
-      rock.position.set(Math.cos(angle) * 7.6, 0.15, Math.sin(angle) * 7.6);
-      rock.scale.set(1.2, 0.7, 1.2);
+    const rimStoneMat2 = new THREE.MeshStandardMaterial({ color: 0x8a8378, roughness: 0.95, flatShading: true });
+    for (let i = 0; i < 46; i++) {
+      const angle = (i / 46) * Math.PI * 2 + (Math.random() - 0.5) * 0.05;
+      const size = 0.45 + Math.random() * 0.35;
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(size, 0), i % 3 === 0 ? rimStoneMat2 : rimStoneMat);
+      const r = 7.7 + (Math.random() - 0.5) * 0.4;
+      rock.position.set(Math.cos(angle) * r, 0.05, Math.sin(angle) * r);
+      rock.scale.set(1.3, 0.45 + Math.random() * 0.25, 1);
+      rock.rotation.y = -angle + Math.random() * 0.4;
       pond.add(rock);
     }
 
@@ -1641,30 +1827,98 @@ export class TempleWorld {
     islet.position.y = 0.5;
     pond.add(islet);
 
-    const whiteJadeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.2, metalness: 0.1 });
+    const whiteJadeMat = new THREE.MeshStandardMaterial({ color: 0xf5f2ea, roughness: 0.35, metalness: 0.05 });
     const quanAmGroup = new THREE.Group();
     quanAmGroup.position.y = 1.1;
 
-    const qaLotus = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.8, 0.25, 12), whiteJadeMat);
-    quanAmGroup.add(qaLotus);
+    // Đài sen
+    for (let i = 0; i < 12; i++) {
+      const petal = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), whiteJadeMat);
+      petal.scale.set(0.8, 0.5, 1.4);
+      const a = (i / 12) * Math.PI * 2;
+      petal.position.set(Math.cos(a) * 0.55, 0.1, Math.sin(a) * 0.55);
+      petal.rotation.y = -a;
+      quanAmGroup.add(petal);
+    }
 
-    const qaRobe = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.55, 1.8, 12), whiteJadeMat);
-    qaRobe.position.y = 1.0;
+    // Thân áo dài buông chấm chân
+    const robeProfile = [
+      new THREE.Vector2(0.0, 0.12),
+      new THREE.Vector2(0.5, 0.12),
+      new THREE.Vector2(0.44, 0.6),
+      new THREE.Vector2(0.34, 1.2),
+      new THREE.Vector2(0.36, 1.6),
+      new THREE.Vector2(0.4, 1.85),
+      new THREE.Vector2(0.24, 2.05),
+      new THREE.Vector2(0.1, 2.12),
+      new THREE.Vector2(0.0, 2.12)
+    ];
+    const qaRobe = new THREE.Mesh(new THREE.LatheGeometry(robeProfile, 28), whiteJadeMat);
+    qaRobe.scale.z = 0.75;
     quanAmGroup.add(qaRobe);
 
-    const qaHead = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), whiteJadeMat);
-    qaHead.position.y = 2.05;
+    // Đầu + khăn choàng trùm đầu buông xuống vai
+    const qaHead = new THREE.Mesh(new THREE.SphereGeometry(0.2, 18, 14), whiteJadeMat);
+    qaHead.position.y = 2.32;
     quanAmGroup.add(qaHead);
+    const veil = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.62),
+      whiteJadeMat
+    );
+    veil.position.set(0, 2.35, -0.03);
+    veil.rotation.x = -0.25;
+    quanAmGroup.add(veil);
+    const crown = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.2, 10), whiteJadeMat);
+    crown.position.y = 2.62;
+    quanAmGroup.add(crown);
 
-    const qaVase = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 0.25), whiteJadeMat);
-    qaVase.position.set(0.25, 1.15, 0.25);
+    // Tay trái ôm tịnh bình trước ngực, tay phải cầm cành dương liễu
+    const qaVase = new THREE.Mesh(
+      new THREE.LatheGeometry([
+        new THREE.Vector2(0.0, 0.0),
+        new THREE.Vector2(0.07, 0.02),
+        new THREE.Vector2(0.09, 0.12),
+        new THREE.Vector2(0.04, 0.22),
+        new THREE.Vector2(0.03, 0.3),
+        new THREE.Vector2(0.05, 0.33)
+      ], 14),
+      whiteJadeMat
+    );
+    qaVase.position.set(0.14, 1.45, 0.3);
     quanAmGroup.add(qaVase);
+    const willow = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-0.16, 1.5, 0.3),
+        new THREE.Vector3(-0.2, 1.75, 0.35),
+        new THREE.Vector3(-0.32, 1.9, 0.38)
+      ]), 8, 0.012, 5, false),
+      new THREE.MeshStandardMaterial({ color: 0x4d7c0f })
+    );
+    quanAmGroup.add(willow);
+    for (const side of [-1, 1]) {
+      const sleeve = new THREE.Mesh(new THREE.CapsuleGeometry(0.09, 0.45, 4, 10), whiteJadeMat);
+      sleeve.position.set(side * 0.28, 1.6, 0.18);
+      sleeve.rotation.x = -0.9;
+      sleeve.rotation.z = side * 0.25;
+      quanAmGroup.add(sleeve);
+    }
+
+    // Hào quang sau đầu
+    const qaHalo = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 1.1),
+      new THREE.MeshBasicMaterial({ map: createHaloTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.7 })
+    );
+    qaHalo.position.set(0, 2.38, -0.28);
+    quanAmGroup.add(qaHalo);
+
+    // Tượng nhìn ra phía lối đi chính
+    quanAmGroup.rotation.y = Math.PI / 2;
 
     pond.add(quanAmGroup);
     this.pondGroup = pond;
     this.scene.add(pond);
 
-    this.collisionBoxes.push({ minX: -26, maxX: -10, minZ: 16, maxZ: 32, type: 'impassable' });
+    this.collisionCircles.push({ x: -18, z: 24, r: 8.4 });
   }
 
   // ===================== 11. CÂY BỒ ĐỀ LỚN & VÒNG GHẾ ĐÁ (GÓC TRÁI NHƯ TRONG ẢNH MẪU) =====================
@@ -1721,7 +1975,7 @@ export class TempleWorld {
 
     this.scene.add(tree);
 
-    this.collisionBoxes.push({ minX: -20.5, maxX: -15.5, minZ: 11.5, maxZ: 16.5, type: 'impassable' });
+    this.collisionCircles.push({ x: -18, z: 14, r: 3.1 });
   }
 
   // ===================== 12. 15-20 CÂY HOA SỨ & BONSAI DỌC LỐI ĐI =====================
@@ -1795,7 +2049,8 @@ export class TempleWorld {
   // Tường rào bao quanh chùa & Hàng cau/dừa nhiệt đới (như trong ảnh mẫu)
   private buildPerimeterWalls() {
     const wallMat = new THREE.MeshStandardMaterial({ color: 0x948b81, roughness: 0.95 });
-    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(), roughness: 0.65 });
+    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(),
+      side: THREE.DoubleSide, roughness: 0.65 });
 
     const createWallSegment = (x: number, z: number, w: number, d: number) => {
       const group = new THREE.Group();
@@ -1917,21 +2172,21 @@ export class TempleWorld {
   private setupSmokeAndPetals() {
     // 1. Khói hương: Sprite tròn mờ (radial gradient), bay lên lượn nhẹ, to dần và mờ dần trong 4-6s
     const smokeTex = getSmokeSpriteTexture();
-    const smokeCount = 28;
+    const smokeCount = 36;
 
     for (let i = 0; i < smokeCount; i++) {
       const mat = new THREE.SpriteMaterial({
         map: smokeTex,
         depthWrite: false,
         transparent: true,
-        opacity: 0.0
+        opacity: 0.0,
+        color: 0xf5f1ea
       });
       const sp = new THREE.Sprite(mat);
-      sp.position.set((Math.random() - 0.5) * 0.35, 1.6 + (i / smokeCount) * 2.8, 8.5 + (Math.random() - 0.5) * 0.35);
       sp.scale.set(0.4, 0.4, 1);
       this.scene.add(sp);
       this.smokeSprites.push(sp);
-      this.smokeLifetimes.push(i / smokeCount); // Offset chu kỳ sống
+      this.smokeLifetimes.push(Math.random()); // Lệch pha để khói liên tục
     }
 
     // 2. Cánh hoa rơi InstancedMesh (~150 cánh hoa)
@@ -1975,8 +2230,9 @@ export class TempleWorld {
 
       this.hemiLight.color.setHex(0x2a2f5a);
       this.hemiLight.groundColor.setHex(0x0a101d);
-      this.hemiLight.intensity = 0.4;
-      this.scene.fog = new THREE.Fog(0x13192f, 50, 200);
+      this.hemiLight.intensity = 0.45;
+      this.scene.environmentIntensity = 0.12;
+      this.scene.fog = new THREE.Fog(0x161c36, 60, 300);
 
       if (this.starsPoints) this.starsPoints.visible = true;
       if (this.moonGroup) this.moonGroup.visible = true;
@@ -1984,25 +2240,28 @@ export class TempleWorld {
       // Đèn lồng, đèn đá, nến chuyển sang emissive ấm (#ffb347), tăng sáng
       for (const pl of this.nightLights) pl.intensity = 1.8;
       for (const pl of this.lanternsGlow) pl.intensity = 1.4;
+      for (const m of this.glowMaterials) m.emissiveIntensity = 2.4;
     } else {
       // Ngày nắng chiều: gradient #6fa8dc -> #ffe3b3
       this.skyMaterial.uniforms.topColor.value.setHex(0x6fa8dc);
-      this.skyMaterial.uniforms.bottomColor.value.setHex(0xffe3b3);
+      this.skyMaterial.uniforms.bottomColor.value.setHex(0xf3e6cc);
 
       this.sunLight.color.setHex(0xffd9a0);
-      this.sunLight.intensity = 2.5;
-      this.sunLight.position.set(45, 28, 38);
+      this.sunLight.intensity = 2.2;
+      this.sunLight.position.set(-38, 34, 30);
 
       this.hemiLight.color.setHex(0xfff1d6);
-      this.hemiLight.groundColor.setHex(0x7a6a4a);
-      this.hemiLight.intensity = 0.9;
-      this.scene.fog = new THREE.Fog(0xffe3b3, 60, 250);
+      this.hemiLight.groundColor.setHex(0x6b5a3a);
+      this.hemiLight.intensity = 0.55;
+      this.scene.environmentIntensity = 0.35;
+      this.scene.fog = new THREE.Fog(0xdfe6df, 90, 520);
 
       if (this.starsPoints) this.starsPoints.visible = false;
       if (this.moonGroup) this.moonGroup.visible = false;
 
       for (const pl of this.nightLights) pl.intensity = 0.3;
       for (const pl of this.lanternsGlow) pl.intensity = 0.15;
+      for (const m of this.glowMaterials) m.emissiveIntensity = 0.5;
     }
   }
 
@@ -2041,14 +2300,14 @@ export class TempleWorld {
     const currentLanternIds = new Set(lanternList.map(l => l.id));
     for (const [id, mesh] of this.lanternMeshMap.entries()) {
       if (!currentLanternIds.has(id)) {
-        this.scene.remove(mesh);
+        this.lanternLayer.remove(mesh);
         this.lanternMeshMap.delete(id);
       }
     }
     for (const item of lanternList) {
       if (!this.lanternMeshMap.has(item.id)) {
         const mesh = this.createFloatingLanternMesh(item);
-        this.scene.add(mesh);
+        this.lanternLayer.add(mesh);
         this.lanternMeshMap.set(item.id, mesh);
       }
     }
@@ -2056,18 +2315,39 @@ export class TempleWorld {
 
   private createIncenseStickMesh(x: number, y: number, z: number): THREE.Group {
     const group = new THREE.Group();
-    const stickMat = new THREE.MeshStandardMaterial({ color: 0x8b3a1a, roughness: 0.9 });
-    const tipMat = new THREE.MeshBasicMaterial({ color: 0xff3b00 });
+    const stickMat = new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.9 });
+    const handleMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.7 });
+    const tipMat = new THREE.MeshBasicMaterial({ color: 0xff5a1f });
+    const glowMat = new THREE.SpriteMaterial({
+      map: getSmokeSpriteTexture(),
+      color: 0xff7a2a,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
 
+    // Bó 3 nén hương hơi xòe ra
     for (let i = 0; i < 3; i++) {
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.45), stickMat);
-      stick.position.set((i - 1) * 0.035, 0.22, 0);
-      group.add(stick);
+      const stick = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.62, 5), stickMat);
+      body.position.y = 0.31;
+      stick.add(body);
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.2, 5), handleMat);
+      handle.position.y = -0.05;
+      stick.add(handle);
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 6), tipMat);
+      tip.position.y = 0.63;
+      stick.add(tip);
+      const glow = new THREE.Sprite(glowMat);
+      glow.scale.set(0.12, 0.12, 1);
+      glow.position.y = 0.63;
+      stick.add(glow);
 
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 6), tipMat);
-      tip.position.set((i - 1) * 0.035, 0.45, 0);
-      group.add(tip);
+      stick.position.x = (i - 1) * 0.03;
+      stick.rotation.z = (i - 1) * 0.12;
+      group.add(stick);
     }
+    group.rotation.y = Math.random() * Math.PI;
     group.position.set(x, y, z);
     return group;
   }
@@ -2094,31 +2374,51 @@ export class TempleWorld {
 
   private createFloatingLanternMesh(item: LanternItem): THREE.Group {
     const group = new THREE.Group();
-    (group as any).userData = { lanternData: item };
+    group.userData = { lanternData: item };
 
-    const paperMat = new THREE.MeshStandardMaterial({ color: 0xf43f5e, roughness: 0.6 });
-    for (let i = 0; i < 6; i++) {
-      const petal = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 4), paperMat);
-      const a = (i * Math.PI * 2) / 6;
-      petal.position.set(Math.cos(a) * 0.18, 0.08, Math.sin(a) * 0.18);
-      petal.rotation.z = Math.cos(a) * 0.35;
-      petal.rotation.x = Math.sin(a) * -0.35;
-      group.add(petal);
+    const petalOuter = new THREE.MeshStandardMaterial({ color: 0xf9a8d4, roughness: 0.55, emissive: 0xf472b6, emissiveIntensity: 0.25 });
+    const petalInner = new THREE.MeshStandardMaterial({ color: 0xfce7f3, roughness: 0.5, emissive: 0xfbcfe8, emissiveIntensity: 0.35 });
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.26, 0.2, 0.08, 12),
+      new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.8 })
+    );
+    group.add(base);
+
+    // 2 tầng cánh sen
+    for (const [count, radius, tilt, mat, h] of [[8, 0.2, 0.55, petalOuter, 0.1], [6, 0.11, 0.3, petalInner, 0.14]] as const) {
+      for (let i = 0; i < count; i++) {
+        const petal = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), mat);
+        petal.scale.set(0.7, 1.4, 0.35);
+        const a = (i / count) * Math.PI * 2;
+        petal.position.set(Math.cos(a) * radius, h, Math.sin(a) * radius);
+        petal.rotation.y = -a + Math.PI / 2;
+        petal.rotation.x = tilt;
+        petal.rotation.order = 'YXZ';
+        group.add(petal);
+      }
     }
 
-    const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.15), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    candle.position.y = 0.1;
+    const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.14, 8), new THREE.MeshStandardMaterial({ color: 0xfff7ed }));
+    candle.position.y = 0.16;
     group.add(candle);
 
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 6), new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
-    flame.position.y = 0.2;
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8), new THREE.MeshBasicMaterial({ color: 0xffc14d }));
+    flame.position.y = 0.28;
     group.add(flame);
 
-    const light = new THREE.PointLight(0xff9900, 0.5, 3.5);
-    light.position.y = 0.25;
-    group.add(light);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: getSmokeSpriteTexture(),
+      color: 0xffa94d,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      opacity: 0.9
+    }));
+    glow.scale.set(0.9, 0.9, 1);
+    glow.position.y = 0.3;
+    group.add(glow);
 
-    group.position.set(item.x, 0.04, item.z);
+    group.position.set(item.x, 0.06, item.z);
     return group;
   }
 
@@ -2140,25 +2440,25 @@ export class TempleWorld {
       }
     }
 
-    // 2. Khói hương tròn mờ: bay lên, lượn nhẹ, to dần và mờ dần trong 4-6s
+    // 2. Khói hương tròn mờ: bay lên từ lư hương, lượn nhẹ, to dần và mờ dần
+    const urn = this.incenseUrnGroup?.position;
+    const smokeStrength = Math.min(1, 0.35 + this.incenseMeshMap.size * 0.12);
     for (let i = 0; i < this.smokeSprites.length; i++) {
       const sp = this.smokeSprites[i];
-      let lt = (this.smokeLifetimes[i] + delta * 0.2) % 1.0;
+      const lt = (this.smokeLifetimes[i] + delta * 0.18) % 1.0;
       this.smokeLifetimes[i] = lt;
 
-      // Chiều cao bay lên từ 1.6m -> 5.2m
-      sp.position.y = 1.6 + lt * 3.6;
-      // Uốn lượn nhẹ nhàng theo sóng sin
-      sp.position.x = Math.sin(elapsed * 1.5 + i) * (0.15 + lt * 0.35);
-      sp.position.z = 8.5 + Math.cos(elapsed * 1.2 + i * 2) * (0.15 + lt * 0.35);
+      const swirl = 0.08 + lt * 0.55;
+      sp.position.set(
+        (urn?.x ?? 0) + Math.sin(elapsed * 0.9 + i * 1.7) * swirl + lt * 0.6,
+        1.75 + lt * 4.2,
+        (urn?.z ?? 0) + Math.cos(elapsed * 0.7 + i * 2.3) * swirl
+      );
 
-      // Kích thước to dần (0.35 -> 1.2m)
-      const scale = 0.35 + lt * 0.95;
+      const scale = 0.3 + lt * 1.6;
       sp.scale.set(scale, scale, 1);
-
-      // Mờ dần theo thời gian (tối đa 0.35)
-      const alpha = Math.sin(lt * Math.PI) * 0.35;
-      (sp.material as THREE.SpriteMaterial).opacity = alpha;
+      (sp.material as THREE.SpriteMaterial).opacity = Math.sin(lt * Math.PI) * 0.32 * smokeStrength;
+      sp.material.rotation = elapsed * 0.2 + i;
     }
 
     // 3. Cánh hoa rơi InstancedMesh
@@ -2186,22 +2486,29 @@ export class TempleWorld {
 
     // 4. Hào quang Đức Phật Thích Ca nhấp nháy nhẹ trang nghiêm
     if (this.buddhaHalo) {
-      this.buddhaHalo.rotation.z += delta * 0.15;
-      const pulse = 1.0 + Math.sin(elapsed * 2.2) * 0.05;
-      this.buddhaHalo.scale.set(pulse, pulse, 1);
+      this.buddhaHalo.rotation.z += delta * 0.08;
+      (this.buddhaHalo.material as THREE.MeshBasicMaterial).opacity = 0.8 + Math.sin(elapsed * 1.6) * 0.15;
     }
 
-    // 5. Đèn hoa đăng trôi dập dềnh trên hồ sen
-    for (const [, lanternGroup] of this.lanternMeshMap.entries()) {
-      const data = (lanternGroup as any).userData?.lanternData as LanternItem;
-      if (data) {
-        const seed = data.seed || 1;
-        const driftT = (elapsed + seed % 1000) * 0.2;
-        lanternGroup.position.x = data.x + Math.sin(driftT) * 0.35;
-        lanternGroup.position.z = data.z + Math.cos(driftT) * 0.35;
-        lanternGroup.position.y = 0.04 + Math.sin(elapsed * 2.5 + seed) * 0.02;
-        lanternGroup.rotation.y += delta * 0.2;
-      }
+    // 5. Đèn hoa đăng trôi chậm vòng quanh hồ sen, dập dềnh theo sóng
+    const pondCenterX = -18;
+    const pondCenterZ = 24;
+    for (const lanternGroup of this.lanternLayer.children) {
+      const data = lanternGroup.userData?.lanternData as LanternItem | undefined;
+      if (!data) continue;
+      const seed = data.seed || 1;
+      const startAngle = Math.atan2(data.z - pondCenterZ, data.x - pondCenterX);
+      const radius = Math.min(6.2, Math.max(3.0, Math.hypot(data.x - pondCenterX, data.z - pondCenterZ)));
+      const age = (Date.now() - data.createdAt) / 1000;
+      const angle = startAngle + age * 0.025 * (seed % 2 === 0 ? 1 : -1);
+      const r = radius + Math.sin(age * 0.2 + seed) * 0.3;
+      lanternGroup.position.set(
+        pondCenterX + Math.cos(angle) * r,
+        0.06 + Math.sin(elapsed * 1.8 + seed) * 0.025,
+        pondCenterZ + Math.sin(angle) * r
+      );
+      lanternGroup.rotation.y += delta * 0.15;
+      lanternGroup.rotation.z = Math.sin(elapsed * 1.3 + seed) * 0.05;
     }
 
     // 6. Hoạt ảnh rung chuông & chày
@@ -2229,6 +2536,10 @@ export class TempleWorld {
   // ===================== KIỂM TRA VA CHẠM =====================
   public checkCollision(x: number, z: number, radius = 0.35): { allowed: boolean; height: number } {
     let groundHeight = 0;
+
+    for (const c of this.collisionCircles) {
+      if (Math.hypot(x - c.x, z - c.z) < c.r + radius) return { allowed: false, height: groundHeight };
+    }
 
     for (const box of this.collisionBoxes) {
       const inX = x >= box.minX - radius && x <= box.maxX + radius;
