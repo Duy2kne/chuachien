@@ -1,8 +1,7 @@
 import * as THREE from 'three';
 import type { PlayerData, ActionType, RobeColor, AvatarStyle } from '../types.js';
-import { getTitle } from '../shared/merit.js';
 import { createHaloTexture } from './proceduralTextures.js';
-import { PlayerTrayMesh } from './templeWorld.js';
+import { makeBunPlateMesh, makeBunMesh } from './templeWorld.js';
 
 // Bảng màu áo tràng truyền thống chùa Việt Nam
 export const ROBE_COLORS: Record<RobeColor, { hex: number; name: string; css: string }> = {
@@ -25,7 +24,9 @@ export const ACTION_DURATION: Partial<Record<ActionType, number>> = {
   lantern: 3.6,
   wave: 2.6,
   sweep: 3.4,
-  pickup: 1.3,
+  take_plate: 1.1,
+  take_bun: 1.0,
+  lift_plate: 1.2,
   serve: 1.4
 };
 
@@ -111,6 +112,20 @@ const smooth = (x: number) => {
 const pulse = (t: number, a: number, b: number) => (t <= a || t >= b ? 0 : Math.sin(((t - a) / (b - a)) * Math.PI));
 
 const toCss = (c: THREE.Color) => `#${c.getHexString()}`;
+
+// Bán kính thân áo theo chiều cao (khớp với torsoProfile trong buildMesh)
+const TORSO_PROFILE: [number, number][] = [[-0.03, 0.262], [0.12, 0.262], [0.27, 0.245], [0.37, 0.215], [0.44, 0.165], [0.485, 0.1], [0.5, 0]];
+function torsoRadius(y: number) {
+  if (y <= TORSO_PROFILE[0][0]) return TORSO_PROFILE[0][1];
+  for (let i = 1; i < TORSO_PROFILE.length; i++) {
+    const [y1, r1] = TORSO_PROFILE[i];
+    if (y <= y1) {
+      const [y0, r0] = TORSO_PROFILE[i - 1];
+      return r0 + ((y - y0) / (y1 - y0)) * (r1 - r0);
+    }
+  }
+  return 0;
+}
 
 // ===================== TEXTURE VẼ TAY =====================
 const faceCache = new Map<string, THREE.CanvasTexture>();
@@ -393,7 +408,6 @@ export class PlayerAvatar {
   private meditationAura!: THREE.Mesh;
   private palms = new THREE.Group();
   private halo: THREE.Mesh | null = null;
-  private titleName = '';
   // Tốc độ di chuyển thực tế (để biết có đang bước đi khi bưng mâm)
   private moveSpeed = 0;
   private lastPos = new THREE.Vector3();
@@ -401,7 +415,7 @@ export class PlayerAvatar {
   private readonly _v2 = new THREE.Vector3();
 
   // Đạo cụ
-  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR' | 'broom' | 'tray', THREE.Object3D> = {} as any;
+  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR' | 'broom' | 'tray' | 'plateHand' | 'bunHand', THREE.Object3D> = {} as any;
 
   // Billboard tên và bong bóng chat
   private nameSprite: THREE.Sprite | null = null;
@@ -528,13 +542,17 @@ export class PlayerAvatar {
     // Tràng hạt đeo cổ
     const agarwood = this.has('mala_tram');
     const beadMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.1 });
-    const beads = new THREE.InstancedMesh(new THREE.SphereGeometry(agarwood ? 0.024 : 0.019, 10, 8), beadMat, 22);
+    const beadR = agarwood ? 0.022 : 0.018;
+    const beadCount = 26;
+    const beads = new THREE.InstancedMesh(new THREE.SphereGeometry(beadR, 10, 8), beadMat, beadCount);
     const dummy = new THREE.Object3D();
-    for (let i = 0; i < 22; i++) {
-      const a = (i / 22) * Math.PI * 2;
-      // Vòng hạt rủ xuống phía trước ngực
+    for (let i = 0; i < beadCount; i++) {
+      // Vòng hạt quàng quanh cổ (sau gáy cao), rủ xuống thành chữ V trước ngực, nằm sát mặt áo
+      const a = (i / beadCount) * Math.PI * 2;
       const front = Math.max(0, Math.cos(a));
-      dummy.position.set(Math.sin(a) * 0.15, 0.44 - front * front * 0.15, Math.cos(a) * 0.13 + 0.015 + front * 0.03);
+      const y = 0.43 - Math.pow(front, 1.5) * 0.2;
+      const r = torsoRadius(y) + beadR * 0.9;
+      dummy.position.set(Math.sin(a) * r, y, Math.cos(a) * r * 0.86 + beadR * 0.5);
       dummy.updateMatrix();
       beads.setMatrixAt(i, dummy.matrix);
       // Gỗ trầm nâu sẫm, cứ 5 hạt có 1 hạt vàng
@@ -545,7 +563,7 @@ export class PlayerAvatar {
       new THREE.ConeGeometry(agarwood ? 0.03 : 0.022, agarwood ? 0.09 : 0.06, 8),
       new THREE.MeshStandardMaterial({ color: agarwood ? 0xb91c1c : 0xd97706 })
     );
-    tassel.position.set(0, 0.26, 0.19);
+    tassel.position.set(0, 0.19, torsoRadius(0.19) * 0.86 + 0.03);
     tassel.rotation.x = Math.PI;
     this.hips.add(tassel);
 
@@ -819,60 +837,52 @@ export class PlayerAvatar {
     this.hips.add(broom);
     this.props.broom = broom;
 
-    // Mâm cơm bưng trên hai tay
-    const tray = PlayerTrayMesh();
-    tray.scale.setScalar(0.85);
+    // Đĩa bánh bao bưng trên hai tay
+    const tray = makeBunPlateMesh(3);
     this.hips.add(tray);
     this.props.tray = tray;
+    // Đĩa không cầm ở tay trái, bánh bao cầm ở tay phải (bám theo vị trí bàn tay mỗi khung hình)
+    const plateHand = makeBunPlateMesh(0);
+    plateHand.scale.setScalar(0.85);
+    this.hips.add(plateHand);
+    this.props.plateHand = plateHand;
+    const bunHand = makeBunMesh();
+    this.hips.add(bunHand);
+    this.props.bunHand = bunHand;
 
     for (const p of Object.values(this.props)) p.visible = false;
   }
 
-  // ===================== BILLBOARD TÊN + DANH HIỆU =====================
+  // ===================== BILLBOARD TÊN NGƯỜI CHƠI =====================
   private buildNameTag() {
-    if (this.nameSprite) {
-      this.group.remove(this.nameSprite);
-      this.nameSprite.material.map?.dispose();
-      this.nameSprite.material.dispose();
-    }
-    const title = getTitle(this.data.merit || 0);
-    this.titleName = title.name;
-
     const canvas = document.createElement('canvas');
     canvas.width = 384;
-    canvas.height = 112;
+    canvas.height = 80;
     const ctx = canvas.getContext('2d')!;
     const text = this.data.name || 'Phật tử';
 
-    // Danh hiệu
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '700 22px "Be Vietnam Pro", sans-serif';
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = 'rgba(20, 14, 10, 0.85)';
-    ctx.strokeText(`〈${title.name}〉`, 192, 18);
-    ctx.fillStyle = title.color;
-    ctx.fillText(`〈${title.name}〉`, 192, 18);
-
-    // Tên
     ctx.font = 'bold 30px "Be Vietnam Pro", sans-serif';
     const w = Math.min(360, ctx.measureText(text).width + 48);
     const x = (384 - w) / 2;
+
     ctx.fillStyle = this.isSelf ? 'rgba(180, 83, 9, 0.92)' : 'rgba(28, 25, 23, 0.78)';
     ctx.strokeStyle = this.isSelf ? '#fde68a' : 'rgba(253, 230, 138, 0.45)';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.roundRect(x, 46, w, 52, 26);
+    ctx.roundRect(x, 14, w, 52, 26);
     ctx.fill();
     ctx.stroke();
+
     ctx.fillStyle = '#fffbeb';
-    ctx.fillText(text, 192, 73, 330);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 192, 41, 330);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     this.nameSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
-    this.nameSprite.scale.set(1.25, 0.365, 1);
-    this.nameSprite.position.set(0, 1.68, 0);
+    this.nameSprite.scale.set(1.25, 0.26, 1);
+    this.nameSprite.position.set(0, 1.62, 0);
     this.nameSprite.renderOrder = 10;
     this.group.add(this.nameSprite);
   }
@@ -940,7 +950,7 @@ export class PlayerAvatar {
     texture.colorSpace = THREE.SRGBColorSpace;
     this.bubbleSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
     this.bubbleSprite.scale.set(2.4, 0.94, 1);
-    this.bubbleSprite.position.set(0, 2.25, 0);
+    this.bubbleSprite.position.set(0, 2.15, 0);
     this.bubbleSprite.renderOrder = 11;
     this.group.add(this.bubbleSprite);
 
@@ -968,8 +978,6 @@ export class PlayerAvatar {
         this.bubbleSprite = null;
       }
     }
-
-    if (getTitle(this.data.merit || 0).name !== this.titleName) this.buildNameTag();
 
     // 2. Nội suy vị trí người chơi khác
     if (!this.isSelf) {
@@ -1040,7 +1048,7 @@ export class PlayerAvatar {
 
   private computePose(anim: ActionType, t: number, elapsed: number): Pose {
     const p: Pose = { ...IDLE_POSE };
-    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false, broom: false, tray: false };
+    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false, broom: false, tray: false, plateHand: false, bunHand: false };
 
     switch (anim) {
       case 'idle': {
@@ -1218,20 +1226,50 @@ export class PlayerAvatar {
         break;
       }
 
-      case 'pickup': {
-        // Phụ bếp: cúi xuống quầy, nâng mâm cơm lên ngang ngực
-        const lean = pulse(t, 0, 1.2);
-        const lifted = smooth((t - 0.55) / 0.4);
+      case 'take_plate': {
+        // Tay trái với sang chồng đĩa bên trái, cầm 1 chiếc đĩa đưa về đặt giữa quầy
+        const reach = pulse(t, 0, 0.55);
+        const bring = pulse(t, 0.45, 1.05);
+        const left = mixArm(mixArm(ARM.idle, ARM.holdUp, reach), ARM.pushOut, bring);
+        left[1] -= 0.45 * reach;
+        setArms(p, left, ARM.idle);
+        p.sway = -0.06 * reach;
+        p.bend = 0.12 * (reach + bring);
+        p.headX = 0.2;
+        p.headZ = 0.12 * reach;
+        show.plateHand = t > 0.35 && t < 0.9;
+        break;
+      }
+
+      case 'take_bun': {
+        // Tay phải gắp bánh bao từ xửng hấp bên phải, đặt lên đĩa trước mặt
+        const reach = pulse(t, 0, 0.5);
+        const bring = pulse(t, 0.42, 0.95);
+        const right = mixArm(mixArm(ARM.idle, ARM.holdUp, reach), ARM.pushOut, bring);
+        right[1] -= 0.45 * reach;
+        setArms(p, ARM.idle, right);
+        p.sway = 0.06 * reach;
+        p.bend = 0.12 * (reach + bring);
+        p.headX = 0.2;
+        p.headZ = -0.12 * reach;
+        show.bunHand = t > 0.3 && t < 0.82;
+        break;
+      }
+
+      case 'lift_plate': {
+        // Cúi xuống quầy, hai tay nâng đĩa bánh bao lên ngang ngực
+        const lean = pulse(t, 0, 1.1);
+        const lifted = smooth((t - 0.5) / 0.45);
         setArms(p, mixArm(ARM.holdLow, ARM.hold, lifted));
-        p.bend = 0.35 * lean;
-        p.headX = 0.3 * lean;
-        show.tray = t > 0.55;
+        p.bend = 0.3 * lean;
+        p.headX = 0.25 * lean;
+        show.tray = t > 0.45;
         this.props.tray.position.set(0, 0.14 + 0.08 * lifted, 0.4 - 0.06 * lifted);
         break;
       }
 
       case 'carry': {
-        // Bưng mâm cơm bằng hai tay; đang đi thì bước chân nhịp nhàng, giữ mâm thăng bằng
+        // Bưng đĩa bánh bao bằng hai tay; đang đi thì bước chân nhịp nhàng, giữ đĩa thăng bằng
         setArms(p, ARM.hold);
         show.tray = true;
         this.props.tray.position.set(0, 0.22, 0.34);
@@ -1250,7 +1288,7 @@ export class PlayerAvatar {
       }
 
       case 'serve': {
-        // Cúi người đặt mâm cơm xuống bàn rồi đứng thẳng, chắp tay
+        // Cúi người đặt đĩa bánh bao xuống bàn rồi đứng thẳng, chắp tay
         const place = smooth(t / 0.6) * (1 - smooth((t - 0.95) / 0.35));
         setArms(p, t < 0.9 ? mixArm(ARM.hold, ARM.pushOut, place) : mixArm(ARM.pray, ARM.pushOut, place));
         p.bend = 0.32 * place;
@@ -1307,6 +1345,15 @@ export class PlayerAvatar {
       right.hand.getWorldPosition(this._v2);
       this.hips.worldToLocal(this._v1.add(this._v2).multiplyScalar(0.5));
       this.palms.position.copy(this._v1);
+    }
+
+    // Đĩa (tay trái) và bánh bao (tay phải) bám theo bàn tay, luôn giữ nằm ngang
+    for (const [prop, hand] of [[this.props.plateHand, left.hand], [this.props.bunHand, right.hand]] as const) {
+      if (!prop.visible) continue;
+      this.group.updateMatrixWorld(true);
+      hand.getWorldPosition(this._v1);
+      this.hips.worldToLocal(this._v1);
+      prop.position.set(this._v1.x, this._v1.y + 0.02, this._v1.z + 0.03);
     }
 
     // Vạt áo co lại khi ngồi/quỳ, lắc nhẹ theo người
