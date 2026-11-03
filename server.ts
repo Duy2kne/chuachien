@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
+import { DINING, TRAY_SLOTS, TRAY_TTL_MS, traySlot, type TrayItem } from './src/shared/dining.js';
 import { SHOP_ITEMS, COMMUNAL_PROJECTS, getShopItem, weekKey, type CommunalState, type MeritProfile, type WeeklyWinner } from './src/shared/merit.js';
 import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
 
@@ -146,6 +147,7 @@ interface RoomState {
   lastDrumTime: number;
   leaves: LeafPile[];
   theme: string;
+  trays: TrayItem[];
 }
 
 const BASE_ROOMS: { id: string; name: string; theme: string }[] = [
@@ -176,6 +178,7 @@ for (const base of BASE_ROOMS) {
     lastBellTime: 0,
     lastDrumTime: 0,
     leaves: [],
+    trays: [],
     theme: base.theme
   });
 }
@@ -189,6 +192,7 @@ interface PlayerSession {
   lastActionTime: number;
   lastChatTime: number;
   lastProfileTime?: number;
+  carrying?: boolean;   // đang bưng mâm cơm từ bếp
   uid: string;
   meritCooldown: Map<string, number>;
 }
@@ -302,7 +306,7 @@ const LEAF_BLOCKERS: [number, number, number][] = [
   [-5.2, -2.5, 1], [5.2, -2.5, 1], [-8.5, 4, 1], [8.5, 4, 1], [-8.5, 16, 1], [8.5, 16, 1], [-8.5, 28, 1], [8.5, 28, 1],
   [-24, 4, 1.3], [-25, -8, 1.3], [-20, -18, 1.3], [24, 4, 1.3], [25, -8, 1.3], [20, -18, 1.3], [24, 14, 1.3], [24, 34, 1.3],
   [-24, 34, 1.3], [26, 24, 1.3],
-  [17, 26, 3.2], [-17, -11, 2.8], [18, -12, 5.2], [-12.5, 33, 1.8] // bảo tháp, tượng Quan Âm, hồ sen 2, bia công đức
+  [20, 23.5, 8], [-23, -15, 3.2], [-17, -11, 2.8], [18, -12, 5.2], [-12.5, 33, 1.8] // bảo tháp, tượng Quan Âm, hồ sen 2, bia công đức
 ];
 // Vùng lá có thể rơi: quanh gốc bồ đề, hai bên sân, ven tường cây xanh, lối đi
 const LEAF_ZONES: [number, number, number, number, number][] = [
@@ -483,6 +487,7 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
           lastBellTime: 0,
           lastDrumTime: 0,
           leaves: [],
+          trays: [],
           theme: baseTarget.theme
         };
         rooms.set(subId, newRoom);
@@ -519,6 +524,7 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
       lastBellTime: 0,
       lastDrumTime: 0,
       leaves: [],
+      trays: [],
       theme: randomTheme()
     };
     rooms.set(newId, newRoom);
@@ -573,6 +579,7 @@ io.on('connection', (socket: Socket) => {
       lastBellTime: 0,
       lastDrumTime: 0,
       leaves: [],
+      trays: [],
       theme: roomTheme
     };
 
@@ -673,6 +680,7 @@ io.on('connection', (socket: Socket) => {
       flowers: room.flowers,
       lanterns: room.lanterns,
       leaves: room.leaves,
+      trays: room.trays,
       uid,
       leaderboard: getLeaderboard(),
       profile: getProfile(uid),
@@ -868,6 +876,47 @@ io.on('connection', (socket: Socket) => {
         meritGain = 0;
         session.data.anim = 'wave';
         break;
+
+      case 'pickup': {
+        // Phụ bếp: phải đứng ở quầy bếp trai đường
+        const k = DINING.kitchenSpot;
+        if (Math.hypot(session.data.x - k.x, session.data.z - k.z) > 2.5) {
+          if (typeof callback === 'function') callback({ error: 'Hãy vào bếp trai đường để bê mâm cơm 🙏' });
+          return;
+        }
+        session.carrying = true;
+        session.data.anim = 'pickup';
+        meritGain = 0;
+        break;
+      }
+
+      case 'serve': {
+        // Đặt mâm cơm lên bàn: phải đang bưng mâm và đứng cạnh chỗ đặt
+        const slot = Math.floor(Number(data.text));
+        if (!session.carrying || !(slot >= 0 && slot < TRAY_SLOTS)) {
+          if (typeof callback === 'function') callback({ error: 'Hãy vào bếp bê mâm cơm trước 🙏' });
+          return;
+        }
+        const s = traySlot(slot);
+        if (Math.hypot(session.data.x - s.spot.x, session.data.z - s.spot.z) > 2.5) {
+          if (typeof callback === 'function') callback({ error: 'Hãy đứng sát bàn để đặt mâm 🙏' });
+          return;
+        }
+        session.carrying = false;
+        room.trays = room.trays.filter(t => t.slot !== slot);
+        room.trays.push({
+          id: `tray-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          slot,
+          playerName: session.data.name,
+          createdAt: now
+        });
+        io.to(room.id).emit('trays', room.trays);
+        meritGain = 3;
+        stats.servedCount = (stats.servedCount || 0) + 1;
+        session.data.anim = 'serve';
+        broadCastText = `${session.data.name} vừa dọn mâm cơm lên bàn trai đường 🍚`;
+        break;
+      }
 
       case 'sweep': {
         // Quét đống lá ở gần: phải đứng cách đống lá dưới 3 mét
@@ -1097,7 +1146,8 @@ io.on('connection', (socket: Socket) => {
     }
     socket.leave(session.room);
 
-    // Vào phòng mới
+    // Vào phòng mới (mâm đang bưng ở phòng cũ coi như đã đặt lại bếp)
+    session.carrying = false;
     session.room = targetRoom.id;
     session.data.room = targetRoom.id;
     targetRoom.emptySince = null;
@@ -1114,7 +1164,8 @@ io.on('connection', (socket: Socket) => {
       incense: targetRoom.incense,
       flowers: targetRoom.flowers,
       lanterns: targetRoom.lanterns,
-      leaves: targetRoom.leaves
+      leaves: targetRoom.leaves,
+      trays: targetRoom.trays
     };
 
     if (typeof callback === 'function') {
@@ -1193,6 +1244,11 @@ setInterval(() => {
         lanterns: room.lanterns
       });
     }
+
+    // Mâm cơm để trên bàn 5 phút thì được dọn đi
+    const prevTrays = room.trays.length;
+    room.trays = room.trays.filter(t => now - t.createdAt < TRAY_TTL_MS);
+    if (prevTrays !== room.trays.length) io.to(room.id).emit('trays', room.trays);
 
     // 4. Dọn phòng phụ trống quá ROOM_IDLE_MS (5 phút)
     if (!room.isBase && room.players.size === 0 && room.emptySince && (now - room.emptySince > ROOM_IDLE_MS)) {
