@@ -17,7 +17,8 @@ import { LeaderboardModal } from './components/LeaderboardModal.js';
 import { ShopModal } from './components/ShopModal.js';
 import { COMMUNAL_PROJECTS, type MeritProfile, type CommunalState } from './shared/merit.js';
 import { getTheme } from './scene/themes.js';
-import { DINING, traySlot, type TrayItem } from './shared/dining.js';
+import { DINING, KITCHEN_REACH, SERVE_REACH, TRAY_SLOTS, traySlot, type TrayItem } from './shared/dining.js';
+import { KitchenPanel, kitchenStepEnabled, nextKitchenStep, type KitchenState } from './components/KitchenPanel.js';
 import { Sun, Moon, Music, Maximize2, Sparkles, UserPen, Trophy, Gift } from 'lucide-react';
 
 const _targetLook = new THREE.Vector3();
@@ -98,6 +99,12 @@ export default function App() {
   // Phụ bếp: đang bưng mâm cơm, danh sách mâm trên bàn
   const carryingRef = useRef(false);
   const traysRef = useRef<TrayItem[]>([]);
+  // Đĩa trên quầy (null = chưa lấy, 0-3 bánh bao) + vị trí so với quầy/bàn để bật tắt nút
+  const [kitchen, setKitchen] = useState<KitchenState>({ plate: null, carrying: false });
+  const kitchenRef = useRef<KitchenState>({ plate: null, carrying: false });
+  const [kitchenCtx, setKitchenCtx] = useState({ inside: false, atCounter: false, serveSlot: null as number | null });
+  const kitchenCtxKey = useRef('');
+  const kitchenStepRef = useRef<(step: number) => void>(() => {});
   const [roomList, setRoomList] = useState<RoomInfo[]>([]);
   const [overallStats, setOverallStats] = useState<OverallStats>({
     totalVisits: 156,
@@ -315,9 +322,9 @@ export default function App() {
       showToast(`🥁 ${data.playerName} vừa đánh Trống Bát Nhã`);
     };
 
-    network.onNewIncense = (item) => worldRef.current?.syncObjects([item], [], []);
-    network.onNewFlower = (item) => worldRef.current?.syncObjects([], [item], []);
-    network.onNewLantern = (item) => worldRef.current?.syncObjects([], [], [item]);
+    network.onNewIncense = (item) => worldRef.current?.addObjects([item], [], []);
+    network.onNewFlower = (item) => worldRef.current?.addObjects([], [item], []);
+    network.onNewLantern = (item) => worldRef.current?.addObjects([], [], [item]);
     network.onObjectsSync = (data) => worldRef.current?.syncObjects(data.incense, data.flowers, data.lanterns);
     network.onConnectionStateChange = (_connected, msg) => { if (msg) showToast(msg); };
   }, []);
@@ -336,13 +343,6 @@ export default function App() {
     if (isSelf) {
       avatar.onActionFinished = (anim) => {
         if (avatar.currentAnim !== anim) return;
-        if (anim === 'pickup' && carryingRef.current) {
-          // Bê mâm xong: bưng mâm đi tới chỗ trống trên bàn ăn
-          avatar.currentAnim = 'carry';
-          setCurrentAnim('carry');
-          triggerActionRef.current('pickup');
-          return;
-        }
         avatar.currentAnim = carryingRef.current ? 'carry' : 'idle';
         setCurrentAnim(avatar.currentAnim);
       };
@@ -526,6 +526,15 @@ export default function App() {
 
         const sp = selfAvatarRef.current.group.position;
         world.updateInterior(sp.x, sp.z);
+        const inside = world.isInsideDining(sp.x, sp.z);
+        const k = DINING.kitchenSpot;
+        const atCounter = Math.hypot(sp.x - k.x, sp.z - k.z) < KITCHEN_REACH - 0.2;
+        const serveSlot = kitchenRef.current.carrying ? findServeSlot(sp.x, sp.z) : null;
+        const key = `${inside ? 1 : 0}${atCounter ? 1 : 0}${serveSlot ?? '-'}`;
+        if (key !== kitchenCtxKey.current) {
+          kitchenCtxKey.current = key;
+          setKitchenCtx({ inside, atCounter, serveSlot });
+        }
         const pile = world.getNearestLeafPile(sp.x, sp.z);
         const near = !!pile && Math.hypot(pile.x - sp.x, pile.z - sp.z) < 3 && selfAvatarRef.current.currentAnim !== 'sweep';
         if (near !== nearLeafRef.current) {
@@ -793,6 +802,12 @@ export default function App() {
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
       keysPressed.current[e.code] = true;
       if (e.code === 'KeyF' && nearLeafRef.current && !e.repeat) triggerActionRef.current('sweep');
+      // Phụ bếp: 1 lấy đĩa, 2 lấy bánh bao, 3 bê đĩa, 4 đặt xuống, E = bước tiếp theo
+      if (!e.repeat && (kitchenCtxKey.current.startsWith('1') || kitchenRef.current.carrying)) {
+        const digit = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
+        if (digit >= 0) kitchenStepRef.current(digit + 1);
+        if (e.code === 'KeyE') kitchenStepRef.current(nextKitchenStep(kitchenRef.current));
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       keysPressed.current[e.code] = false;
@@ -1114,18 +1129,13 @@ export default function App() {
         // Đứng trước mặt trống
         spot = { x: 18, z: 9.35, ry: Math.PI };
         break;
-      case 'pickup': {
-        const world = worldRef.current;
-        if (!world) return;
-        if (carryingRef.current) {
-          // Đang bưng mâm: mang tới chỗ trống gần nhất trên bàn ăn
-          const slot = world.pickTraySlot(self.group.position.x, self.group.position.z, traysRef.current);
-          const s = traySlot(slot).spot;
-          startAutoWalk(s.x, s.z, s.ry, 'serve', String(slot));
+      case 'kitchen': {
+        // Đang bưng đĩa thì mang ra bàn; chưa thì đi vào quầy bếp, bảng Phụ bếp sẽ hiện ra
+        if (kitchenRef.current.carrying) {
+          handleKitchenStep(4);
         } else {
-          // Vào bếp trai đường bê mâm cơm
           const k = DINING.kitchenSpot;
-          startAutoWalk(k.x, k.z, k.ry, 'pickup');
+          startAutoWalk(k.x, k.z, k.ry, 'walk');
         }
         return;
       }
@@ -1157,6 +1167,63 @@ export default function App() {
     triggerActionDirect(type);
   };
 
+  // ===================== PHỤ BẾP =====================
+  const updateKitchen = (next: KitchenState) => {
+    kitchenRef.current = next;
+    carryingRef.current = next.carrying;
+    setKitchen(next);
+  };
+
+  // Chỗ đặt đĩa gần nhất trong tầm với (ưu tiên chỗ còn trống)
+  const findServeSlot = (x: number, z: number): number | null => {
+    const used = new Set(traysRef.current.map(t => t.slot));
+    let best: number | null = null;
+    let bestScore = Infinity;
+    for (let s = 0; s < TRAY_SLOTS; s++) {
+      const sp = traySlot(s).spot;
+      const d = Math.hypot(sp.x - x, sp.z - z);
+      if (d > SERVE_REACH - 0.2) continue;
+      const score = d + (used.has(s) ? 5 : 0);
+      if (score < bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    return best;
+  };
+
+  // Bước 1-3 làm ở quầy bếp (chưa đứng ở quầy thì tự đi tới), bước 4 đặt đĩa xuống bàn
+  const handleKitchenStep = (step: number) => {
+    const self = selfAvatarRef.current;
+    const world = worldRef.current;
+    if (!self || !world || !kitchenStepEnabled(step, kitchenRef.current)) return;
+    sound.playClick();
+    const pos = self.group.position;
+
+    if (step === 4) {
+      const near = findServeSlot(pos.x, pos.z);
+      const slot = near ?? world.pickTraySlot(pos.x, pos.z, traysRef.current);
+      const spot = traySlot(slot).spot;
+      if (near !== null) {
+        self.group.rotation.y = spot.ry;
+        triggerActionDirect('serve', String(slot));
+      } else {
+        startAutoWalk(spot.x, spot.z, spot.ry, 'serve', String(slot));
+      }
+      return;
+    }
+
+    const action: ActionType = step === 1 ? 'take_plate' : step === 2 ? 'take_bun' : 'lift_plate';
+    const k = DINING.kitchenSpot;
+    if (Math.hypot(pos.x - k.x, pos.z - k.z) < KITCHEN_REACH - 0.2) {
+      self.group.rotation.y = k.ry;
+      triggerActionDirect(action);
+    } else {
+      startAutoWalk(k.x, k.z, k.ry, action);
+    }
+  };
+  kitchenStepRef.current = handleKitchenStep;
+
   // Thả đèn: đi tới bờ hồ sen gần nhất rồi quỳ thả đèn
   const startLanternRelease = (wish: string) => {
     const self = selfAvatarRef.current;
@@ -1178,15 +1245,21 @@ export default function App() {
       return;
     }
 
-    // Làm việc khác thì đặt mâm đang bưng lại
-    if (!['pickup', 'serve', 'carry'].includes(type)) carryingRef.current = false;
+    // Làm việc khác (không phải phụ bếp) thì coi như đặt đĩa đang bưng lại
+    const kitchenAction = ['take_plate', 'take_bun', 'lift_plate', 'serve'].includes(type);
+    if (!kitchenAction && kitchenRef.current.carrying) updateKitchen({ ...kitchenRef.current, carrying: false });
     if (avatar.currentAnim === type) avatar.restartAnim();
     avatar.currentAnim = type;
     setCurrentAnim(type);
 
     const res = await network.sendAction(type, text);
-    if (type === 'pickup') carryingRef.current = !res?.error;
-    if (type === 'serve') carryingRef.current = false;
+    if (kitchenAction && res && 'carrying' in res) {
+      // Trạng thái bếp do server quyết định; đĩa trên quầy cập nhật khớp lúc tay đặt đĩa / bánh xuống
+      const next: KitchenState = { plate: (res as any).kitchenPlate ?? null, carrying: !!(res as any).carrying };
+      updateKitchen(next);
+      const delay = type === 'take_plate' ? 850 : type === 'take_bun' ? 780 : type === 'lift_plate' ? 450 : 0;
+      setTimeout(() => worldRef.current?.setCounterPlate(kitchenRef.current.plate), delay);
+    }
     if (res?.error) {
       showToast(res.error);
       // Bị từ chối (ví dụ chuông vừa được thỉnh) thì dừng động tác
@@ -1219,7 +1292,8 @@ export default function App() {
         traysRef.current = res.trays || [];
         worldRef.current?.syncTrays(traysRef.current);
       }
-      carryingRef.current = false;
+      updateKitchen({ plate: null, carrying: false });
+      worldRef.current?.setCounterPlate(null);
 
       applyRoomTheme(res.room.theme);
       setCurrentRoom({
@@ -1455,6 +1529,19 @@ export default function App() {
                 </span>
               )}
             </button>
+          )}
+
+          {/* Bảng phụ bếp: hiện khi ở trong trai đường hoặc đang bưng đĩa */}
+          {(kitchenCtx.inside || kitchen.carrying) && (
+            <KitchenPanel
+              plate={kitchen.plate}
+              carrying={kitchen.carrying}
+              atCounter={kitchenCtx.atCounter}
+              nearTable={kitchenCtx.serveSlot !== null}
+              isTouch={isTouchDevice}
+              busy={isNavigating || ['take_plate', 'take_bun', 'lift_plate', 'serve'].includes(currentAnim)}
+              onStep={handleKitchenStep}
+            />
           )}
 
           {/* BOTTOM CENTER: Thanh hành động */}
