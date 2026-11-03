@@ -12,6 +12,7 @@ import {
 } from './proceduralTextures.js';
 import type { IncenseItem, FlowerItem, LanternItem, LeafPile } from '../types.js';
 import { DEFAULT_THEME, type TempleTheme } from './themes.js';
+import { DINING, traySlot, type TrayItem } from '../shared/dining.js';
 
 export interface CollisionBox {
   minX: number;
@@ -179,6 +180,41 @@ export function makeRoofGroup(
   return group;
 }
 
+// Mâm cơm chay: mâm gỗ tròn, bát cơm trắng, đĩa rau xanh, bát canh, đôi đũa
+export function PlayerTrayMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x7a4a24, roughness: 0.6 });
+  const porcelain = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25 });
+  const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.035, 22), wood);
+  tray.position.y = 0.018;
+  g.add(tray);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.015, 6, 22), wood);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.04;
+  g.add(rim);
+  const bowlGeo = new THREE.SphereGeometry(0.075, 12, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+  const dishes: [number, number, number][] = [[-0.12, -0.05, 0xffffff], [0.12, -0.06, 0x16a34a], [0.0, 0.13, 0xf59e0b]];
+  for (const [x, z, food] of dishes) {
+    // Nửa dưới hình cầu = bát ngửa, miệng bát ở trên
+    const bowl = new THREE.Mesh(bowlGeo, porcelain);
+    bowl.position.set(x, 0.11, z);
+    g.add(bowl);
+    const fill = new THREE.Mesh(new THREE.SphereGeometry(0.066, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: food, roughness: 0.8 }));
+    fill.scale.y = 0.45;
+    fill.position.set(x, 0.1, z);
+    g.add(fill);
+  }
+  const chop = new THREE.MeshStandardMaterial({ color: 0x3b2a1a });
+  for (const dx of [-0.012, 0.012]) {
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.3, 4), chop);
+    stick.rotation.z = Math.PI / 2;
+    stick.rotation.y = 0.3;
+    stick.position.set(0.02, 0.05, -0.2 + dx);
+    g.add(stick);
+  }
+  return g;
+}
+
 export class TempleWorld {
   public scene: THREE.Scene;
   public collisionBoxes: CollisionBox[] = [];
@@ -244,6 +280,12 @@ export class TempleWorld {
   private steleMat: THREE.MeshStandardMaterial | null = null;
   private builtProjects = new Map<string, { group: THREE.Group; grow: number }>();
 
+  // Nhà ăn: mái ẩn khi người chơi vào trong, mâm cơm trên bàn
+  private diningRoof: THREE.Group | null = null;
+  private trayLayer = new THREE.Group();
+  private trayMeshes = new Map<string, THREE.Group>();
+  private steamSprites: THREE.Sprite[] = [];
+
   // Đống lá đa rụng trên sân (đồng bộ từ server)
   public leafLayer = new THREE.Group();
   private leafPiles = new Map<string, { data: LeafPile; group: THREE.Group; falling: number; sweptAt: number }>();
@@ -279,6 +321,7 @@ export class TempleWorld {
     this.buildMeritStele();
     this.setupSmokeAndPetals();
     this.enableShadows();
+    this.buildDiningHall();
   }
 
   private enableShadows() {
@@ -1113,11 +1156,6 @@ export class TempleWorld {
     this.scene.add(hall);
 
     this.collisionBoxes.push(
-      // Mép nền chính điện: không leo thẳng lên được, phải đi bậc tam cấp ở giữa (rộng 7.6)
-      { minX: -11.2, maxX: -3.85, minZ: -4.1, maxZ: -3.9, type: 'impassable' },
-      { minX: 3.85, maxX: 11.2, minZ: -4.1, maxZ: -3.9, type: 'impassable' },
-      { minX: -11.2, maxX: -10.9, minZ: -20, maxZ: -3.9, type: 'impassable' },
-      { minX: 10.9, maxX: 11.2, minZ: -20, maxZ: -3.9, type: 'impassable' },
       { minX: -3.8, maxX: 3.8, minZ: -16.8, maxZ: -12.5, type: 'impassable' },
       { minX: -11, maxX: 11, minZ: -19, maxZ: -18, type: 'impassable' },
       { minX: -10.5, maxX: -9.5, minZ: -19, maxZ: -6, type: 'impassable' },
@@ -1641,46 +1679,62 @@ export class TempleWorld {
     lowerRoof.castShadow = true;
     pavilion.add(lowerRoof);
 
-    // TRỐNG BÁT NHÃ ĐỎ NẰM TRÊN GIÁ ĐỠ GỖ (TẦNG 1)
+    // TRỐNG BÁT NHÃ TREO DƯỚI XÀ (TẦNG 1): treo bằng dây thừng, không chạm đất
     const drumGroup = new THREE.Group();
-    // Thân trống sơn đỏ son có vòng nẹp đồng
-    const drumBody = new THREE.Mesh(new THREE.CylinderGeometry(1.08, 1.08, 1.5, 24), new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.6 }));
+    const drumR = 0.82;
+    const drumBody = new THREE.Mesh(new THREE.CylinderGeometry(drumR, drumR, 1.2, 28), new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.55 }));
     drumBody.rotation.x = Math.PI / 2;
     drumGroup.add(drumBody);
 
-    // Đai nẹp vàng kim bao quanh thân trống
-    for (const dz of [-0.4, 0.4]) {
-      const hoop = new THREE.Mesh(new THREE.TorusGeometry(1.09, 0.04, 8, 24), goldMat);
+    // Đai nẹp vàng kim + đinh tán quanh hai mặt trống
+    for (const dz of [-0.6, -0.3, 0.3, 0.6]) {
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(drumR + 0.01, Math.abs(dz) > 0.5 ? 0.05 : 0.03, 8, 32), goldMat);
       hoop.position.z = dz;
       drumGroup.add(hoop);
     }
-
-    // Hai mặt trống da trâu màu trắng kem ngà có viền đinh tán
-    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe2d6be, roughness: 0.9 });
-    for (const dir of [-0.76, 0.76]) {
-      const skin = new THREE.Mesh(new THREE.CircleGeometry(1.05, 24), skinMat);
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe8dcc2, roughness: 0.9 });
+    for (const dir of [-0.61, 0.61]) {
+      const skin = new THREE.Mesh(new THREE.CircleGeometry(drumR - 0.03, 32), skinMat);
       skin.position.z = dir;
       if (dir < 0) skin.rotation.y = Math.PI;
       drumGroup.add(skin);
+      // Vòng âm dương đỏ giữa mặt trống
+      const mark = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.24, 24), new THREE.MeshStandardMaterial({ color: 0xb91c1c, side: THREE.DoubleSide }));
+      mark.position.z = dir * 1.002;
+      drumGroup.add(mark);
+    }
+    // Khoen đồng 2 bên để buộc dây treo
+    for (const sx of [-0.55, 0.55]) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.025, 6, 12), goldMat);
+      ring.position.set(sx, drumR - 0.05, 0);
+      ring.rotation.y = Math.PI / 2;
+      drumGroup.add(ring);
     }
 
-    // Giá đỡ trống bằng gỗ chữ X
-    const standMat = new THREE.MeshStandardMaterial({ color: 0x3d170e, roughness: 0.8 });
-    for (const sz of [-0.5, 0.5]) {
-      const leg1 = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.8, 0.16), standMat);
-      leg1.position.set(0, -0.4, sz);
-      leg1.rotation.z = 0.35;
-      drumGroup.add(leg1);
-
-      const leg2 = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.8, 0.16), standMat);
-      leg2.position.set(0, -0.4, sz);
-      leg2.rotation.z = -0.35;
-      drumGroup.add(leg2);
+    // Trống đung đưa quanh điểm treo (pivot) dưới xà
+    const drumPivot = new THREE.Group();
+    drumPivot.position.set(0, 4.7, 0);
+    drumGroup.position.set(0, 2.25 - 4.7, 0);
+    drumPivot.add(drumGroup);
+    const drumRopeMat = new THREE.MeshStandardMaterial({ color: 0xb08d57, roughness: 0.95 });
+    for (const sx of [-0.55, 0.55]) {
+      const ropeLen = 4.7 - (2.25 + drumR - 0.05);
+      const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, ropeLen, 6), drumRopeMat);
+      rope.position.set(sx * 1.25, -ropeLen / 2, 0);
+      rope.rotation.z = sx > 0 ? -0.18 : 0.18;
+      drumPivot.add(rope);
     }
+    pavilion.add(drumPivot);
+    this.drumMesh = drumPivot;
 
-    drumGroup.position.set(0, 1.6, 0);
-    pavilion.add(drumGroup);
-    this.drumMesh = drumGroup;
+    // Giá treo dùi trống cạnh cột
+    const malletMat = new THREE.MeshStandardMaterial({ color: 0x5b2c12, roughness: 0.6 });
+    for (const dx of [-0.08, 0.08]) {
+      const mallet = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.7, 6), malletMat);
+      mallet.position.set(1.9 + dx, 1.5, 2.0);
+      mallet.rotation.z = 0.2;
+      pavilion.add(mallet);
+    }
 
     // 3. TẦNG 2: ĐẠI HỒNG CHUNG TREO DƯỚI MÁI THƯỢNG
     const colOffsetsUpper = [[-1.6, -1.6], [1.6, -1.6], [-1.6, 1.6], [1.6, 1.6]];
@@ -2048,10 +2102,10 @@ export class TempleWorld {
 
     // 16 Cây hoa sứ (cành khúc khuỷu, hoa trắng nhụy vàng) & cây xanh bóng mát
     const treeCoords = [
-      { x: -24, z: 4 },   { x: -25, z: -8 },  { x: -20, z: -18 }, { x: -12, z: -23 },
+      { x: -24, z: 4 },   { x: -25, z: -8 },  { x: -27, z: -19 }, { x: -12, z: -23 },
       { x: 12, z: -23 },  { x: 20, z: -18 },  { x: 25, z: -8 },   { x: 24, z: 4 },
       { x: 24, z: 14 },   { x: 24, z: 34 },   { x: -24, z: 34 },  { x: -10, z: 42 },
-      { x: 10, z: 42 },   { x: -22, z: 42 },  { x: 22, z: 42 },   { x: 26, z: 24 }
+      { x: 10, z: 42 },   { x: -22, z: 42 },  { x: 22, z: 42 },   { x: 28, z: 31 }
     ];
 
     for (const tc of treeCoords) {
@@ -2338,6 +2392,251 @@ export class TempleWorld {
     this.setDayNight(this.isNight);
   }
 
+  // ===================== NHÀ ĂN (TRAI ĐƯỜNG) =====================
+  private buildDiningHall() {
+    const D = DINING;
+    const cx = (D.minX + D.maxX) / 2;
+    const cz = (D.minZ + D.maxZ) / 2;
+    const width = D.maxX - D.minX;
+    const depth = D.maxZ - D.minZ;
+    const wallH = 3.0;
+    const hall = new THREE.Group();
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xefe3c8, roughness: 0.9 });
+    const woodMat = new THREE.MeshStandardMaterial({ map: getLacqueredWoodTexture(), roughness: 0.65 });
+    const darkWood = new THREE.MeshStandardMaterial({ color: 0x5b3a22, roughness: 0.7 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x8a6a48, roughness: 0.85 });
+    const blockers: THREE.Object3D[] = [];
+
+    // Nền gỗ
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(width, 0.06, depth), floorMat);
+    floor.position.set(cx, 0.03, cz);
+    floor.receiveShadow = true;
+    hall.add(floor);
+
+    // Tường: tây (có cửa), đông, bắc, nam
+    const addWall = (x1: number, z1: number, x2: number, z2: number) => {
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(len, wallH, 0.3), wallMat);
+      wall.position.set((x1 + x2) / 2, wallH / 2, (z1 + z2) / 2);
+      wall.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      hall.add(wall);
+      blockers.push(wall);
+      this.collisionBoxes.push({
+        minX: Math.min(x1, x2) - 0.15, maxX: Math.max(x1, x2) + 0.15,
+        minZ: Math.min(z1, z2) - 0.15, maxZ: Math.max(z1, z2) + 0.15,
+        type: 'impassable'
+      });
+    };
+    addWall(D.minX, D.minZ, D.maxX, D.minZ);
+    addWall(D.minX, D.maxZ, D.maxX, D.maxZ);
+    addWall(D.maxX, D.minZ, D.maxX, D.maxZ);
+    addWall(D.minX, D.minZ, D.minX, D.doorZ[0]);
+    addWall(D.minX, D.doorZ[1], D.minX, D.maxZ);
+    // Khung cửa + xà ngang trên cửa
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.7, D.doorZ[1] - D.doorZ[0] + 0.3), wallMat);
+    lintel.position.set(D.minX, wallH - 0.35, (D.doorZ[0] + D.doorZ[1]) / 2);
+    hall.add(lintel);
+    for (const z of D.doorZ) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, wallH, 0.22), woodMat);
+      post.position.set(D.minX, wallH / 2, z);
+      hall.add(post);
+    }
+    // Cửa sổ song gỗ hai bên
+    for (const z of [20.4, 26.6]) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9), darkWood);
+      win.position.set(D.minX - 0.16, 1.7, z);
+      win.rotation.y = -Math.PI / 2;
+      hall.add(win);
+      for (let i = -2; i <= 2; i++) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.9, 0.05), woodMat);
+        bar.position.set(D.minX - 0.18, 1.7, z + i * 0.26);
+        hall.add(bar);
+      }
+    }
+    // Bảng tên "TRAI ĐƯỜNG" trên cửa, quay ra ngoài (hướng -x)
+    const plaqueFace = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.6, 0.75),
+      new THREE.MeshStandardMaterial({ map: createPlaqueTexture('TRAI ĐƯỜNG', 'Nhà ăn chùa'), roughness: 0.45 })
+    );
+    plaqueFace.position.set(D.minX - 0.2, wallH + 0.25, (D.doorZ[0] + D.doorZ[1]) / 2);
+    plaqueFace.rotation.y = -Math.PI / 2;
+    hall.add(plaqueFace);
+
+    // Mái ngói cong
+    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(), side: THREE.DoubleSide, roughness: 0.55 });
+    const roof = makeRoofGroup(width + 1.6, depth + 1.6, 2.0, 0.9, roofMat);
+    roof.position.set(cx, wallH, cz);
+    roof.traverse(o => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
+    hall.add(roof);
+    this.diningRoof = roof;
+
+    // 2 bàn ăn dài + bồ đoàn hai bên
+    const cushionMat = new THREE.MeshStandardMaterial({ color: 0xc98f2a, roughness: 0.9 });
+    for (const t of D.tables) {
+      const tw = t.maxX - t.minX;
+      const td = t.maxZ - t.minZ;
+      const tx = (t.minX + t.maxX) / 2;
+      const tz = (t.minZ + t.maxZ) / 2;
+      const top = new THREE.Mesh(new THREE.BoxGeometry(tw, 0.08, td), darkWood);
+      top.position.set(tx, D.tableTop - 0.04, tz);
+      top.castShadow = true;
+      top.receiveShadow = true;
+      hall.add(top);
+      for (const lx of [t.minX + 0.2, t.maxX - 0.2]) {
+        for (const lz of [t.minZ + 0.15, t.maxZ - 0.15]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, D.tableTop - 0.08, 0.1), darkWood);
+          leg.position.set(lx, (D.tableTop - 0.08) / 2, lz);
+          hall.add(leg);
+        }
+      }
+      // Bồ đoàn phía tường (chỗ chư tăng ngồi thọ trai)
+      const wallSide = tz < cz ? t.minZ - 0.45 : t.maxZ + 0.45;
+      for (let k = 0; k < 4; k++) {
+        const c = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.12, 18), cushionMat);
+        c.position.set(17.1 + k * 1.27, 0.12, wallSide);
+        hall.add(c);
+      }
+      // Đôi đũa + chén trống sẵn trên bàn
+      for (let k = 0; k < 4; k++) {
+        const bowl = new THREE.Mesh(
+          new THREE.SphereGeometry(0.09, 12, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+          new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3, side: THREE.DoubleSide })
+        );
+        bowl.position.set(17.1 + k * 1.27 + 0.3, D.tableTop + 0.09, tz + (tz < cz ? -0.3 : 0.3));
+        hall.add(bowl);
+      }
+      this.collisionBoxes.push({ minX: t.minX, maxX: t.maxX, minZ: t.minZ, maxZ: t.maxZ, type: 'impassable' });
+    }
+
+    // Bếp: quầy gỗ, bếp lò lửa đỏ, nồi cơm đồng bốc hơi, chồng mâm
+    const C = D.counter;
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(C.maxX - C.minX, 0.95, C.maxZ - C.minZ), darkWood);
+    counter.position.set((C.minX + C.maxX) / 2, 0.475, (C.minZ + C.maxZ) / 2);
+    counter.castShadow = true;
+    hall.add(counter);
+    blockers.push(counter);
+    this.collisionBoxes.push({ minX: C.minX, maxX: C.maxX, minZ: C.minZ, maxZ: C.maxZ, type: 'impassable' });
+    const counterTop = new THREE.Mesh(new THREE.BoxGeometry(C.maxX - C.minX + 0.1, 0.06, C.maxZ - C.minZ + 0.1), new THREE.MeshStandardMaterial({ color: 0xd6c3a0, roughness: 0.6 }));
+    counterTop.position.set((C.minX + C.maxX) / 2, 0.98, (C.minZ + C.maxZ) / 2);
+    hall.add(counterTop);
+
+    const bronze = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, metalness: 0.7, roughness: 0.35 });
+    const stove = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 0.3, 16), new THREE.MeshStandardMaterial({ color: 0x3f3a36, roughness: 0.9 }));
+    stove.position.set(25, 1.16, 22.2);
+    hall.add(stove);
+    const fire = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), new THREE.MeshBasicMaterial({ color: 0xff6a1a }));
+    fire.position.set(25, 1.32, 22.2);
+    hall.add(fire);
+    const pot = new THREE.Mesh(new THREE.SphereGeometry(0.45, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), bronze);
+    pot.rotation.x = Math.PI;
+    pot.position.set(25, 1.72, 22.2);
+    hall.add(pot);
+    const potLid = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.42, 0.06, 20), bronze);
+    potLid.position.set(25, 1.75, 22.2);
+    hall.add(potLid);
+    const fireLight = new THREE.PointLight(0xff8a3a, 1.2, 6);
+    fireLight.position.set(24.5, 1.6, 22.2);
+    hall.add(fireLight);
+    // Nồi canh thứ hai
+    const pot2 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.26, 0.38, 18), bronze);
+    pot2.position.set(25, 1.2, 24.4);
+    hall.add(pot2);
+
+    // Hơi nước bốc lên từ nồi
+    const steamTex = getSmokeSpriteTexture();
+    for (let i = 0; i < 10; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTex, transparent: true, depthWrite: false, opacity: 0 }));
+      sp.userData.phase = i / 10;
+      sp.userData.base = i % 2 === 0 ? new THREE.Vector3(25, 1.8, 22.2) : new THREE.Vector3(25, 1.42, 24.4);
+      this.steamSprites.push(sp);
+      hall.add(sp);
+    }
+
+    // Chồng mâm gỗ trên quầy
+    for (let i = 0; i < 4; i++) {
+      const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.3, 0.04, 20), darkWood);
+      tray.position.set(24.75, 1.03 + i * 0.045, 26.2);
+      hall.add(tray);
+    }
+
+    // Đèn lồng giấy treo trần
+    const lanternMat = new THREE.MeshStandardMaterial({ color: 0xfff1d0, emissive: 0xffc46b, emissiveIntensity: 0.9 });
+    // Treo sát trần phía trên 2 dãy bàn (không chắn tầm nhìn ở lối đi giữa)
+    for (const t of D.tables) {
+      for (const lx of [17.5, 20.5]) {
+        const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 10), lanternMat);
+        lantern.scale.y = 1.3;
+        lantern.position.set(lx, 2.75, (t.minZ + t.maxZ) / 2);
+        hall.add(lantern);
+      }
+    }
+    this.glowMaterials.push(lanternMat);
+    const inLight = new THREE.PointLight(0xffe2b0, 1.4, 14);
+    inLight.position.set(cx - 1, 2.4, cz);
+    hall.add(inLight);
+
+    hall.traverse(o => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && !(m.material as THREE.Material).transparent) m.receiveShadow = true;
+    });
+    this.scene.add(hall);
+    this.cameraBlockers.push(...blockers);
+    this.scene.add(this.trayLayer);
+  }
+
+  // Ẩn mái nhà ăn khi người chơi đang ở trong để nhìn thấy bên trong
+  public updateInterior(x: number, z: number) {
+    if (!this.diningRoof) return;
+    const D = DINING;
+    const inside = x > D.minX && x < D.maxX && z > D.minZ && z < D.maxZ;
+    this.diningRoof.visible = !inside;
+  }
+
+  public isInsideDining(x: number, z: number) {
+    const D = DINING;
+    return x > D.minX && x < D.maxX && z > D.minZ && z < D.maxZ;
+  }
+
+  // Mâm cơm trên bàn (đồng bộ từ server)
+  public syncTrays(list: TrayItem[]) {
+    const ids = new Set(list.map(t => t.id));
+    for (const [id, g] of this.trayMeshes) {
+      if (!ids.has(id)) {
+        this.trayLayer.remove(g);
+        this.trayMeshes.delete(id);
+      }
+    }
+    for (const t of list) {
+      if (this.trayMeshes.has(t.id)) continue;
+      const slot = traySlot(t.slot);
+      const g = PlayerTrayMesh();
+      g.position.set(slot.x, DINING.tableTop, slot.z);
+      g.rotation.y = Math.random() * 0.3 - 0.15;
+      this.trayLayer.add(g);
+      this.trayMeshes.set(t.id, g);
+    }
+  }
+
+  // Chỗ đặt mâm còn trống gần nhất (đều đầy thì lấy mâm cũ nhất)
+  public pickTraySlot(x: number, z: number, list: TrayItem[]): number {
+    const used = new Map(list.map(t => [t.slot, t.createdAt]));
+    let best = -1;
+    let bestD = Infinity;
+    for (let s = 0; s < 8; s++) {
+      if (used.has(s)) continue;
+      const sp = traySlot(s).spot;
+      const d = Math.hypot(sp.x - x, sp.z - z);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    if (best >= 0) return best;
+    return [...used.entries()].sort((a, b) => a[1] - b[1])[0][0];
+  }
+
   // ===================== BIA CÔNG ĐỨC (rùa đội bia) =====================
   private buildMeritStele() {
     const x = -12.5;
@@ -2450,7 +2749,7 @@ export class TempleWorld {
     for (const id of ids) {
       if (this.builtProjects.has(id)) continue;
       let group: THREE.Group | null = null;
-      if (id === 'bao_thap') group = this.buildPagoda(17, 26);
+      if (id === 'bao_thap') group = this.buildPagoda(-23, -15);
       else if (id === 'quan_am') group = this.buildGrandQuanAm(-17, -11);
       else if (id === 'ho_sen_2') group = this.buildSecondPond(18, -12);
       if (!group) continue;
@@ -2939,6 +3238,13 @@ export class TempleWorld {
     }
 
     this.updateLeafPiles(delta);
+    for (const sp of this.steamSprites) {
+      const lt = (sp.userData.phase + elapsed * 0.25) % 1;
+      const base = sp.userData.base as THREE.Vector3;
+      sp.position.set(base.x + Math.sin(elapsed + lt * 6) * 0.08, base.y + lt * 1.1, base.z);
+      sp.scale.setScalar(0.25 + lt * 0.6);
+      (sp.material as THREE.SpriteMaterial).opacity = Math.sin(lt * Math.PI) * 0.35;
+    }
     for (const b of this.builtProjects.values()) {
       if (b.grow >= 1) continue;
       b.grow = Math.min(1, b.grow + delta / 2.5);
@@ -2986,11 +3292,10 @@ export class TempleWorld {
       this.drumBeatingTimer -= delta * 0.6;
       const decay = Math.max(0, this.drumBeatingTimer);
       if (this.drumMesh) {
-        this.drumMesh.scale.set(
-          1 + Math.sin(elapsed * 20) * 0.04 * decay,
-          1 + Math.sin(elapsed * 20) * 0.04 * decay,
-          1
-        );
+        this.drumMesh.rotation.x = -Math.sin(elapsed * 3.2) * 0.06 * decay;
+        const drum = this.drumMesh.children[0];
+        const shake = 1 + Math.sin(elapsed * 22) * 0.025 * decay;
+        drum.scale.set(shake, shake, 1);
       }
     }
   }
