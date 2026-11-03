@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { PlayerData, ActionType, RobeColor, AvatarStyle } from '../types.js';
 import { getTitle } from '../shared/merit.js';
 import { createHaloTexture } from './proceduralTextures.js';
+import { PlayerTrayMesh } from './templeWorld.js';
 
 // Bảng màu áo tràng truyền thống chùa Việt Nam
 export const ROBE_COLORS: Record<RobeColor, { hex: number; name: string; css: string }> = {
@@ -23,7 +24,9 @@ export const ACTION_DURATION: Partial<Record<ActionType, number>> = {
   drum: 3.0,
   lantern: 3.6,
   wave: 2.6,
-  sweep: 3.4
+  sweep: 3.4,
+  pickup: 1.3,
+  serve: 1.4
 };
 
 export type AvatarSoundEvent = 'mo' | 'chime';
@@ -391,11 +394,14 @@ export class PlayerAvatar {
   private palms = new THREE.Group();
   private halo: THREE.Mesh | null = null;
   private titleName = '';
+  // Tốc độ di chuyển thực tế (để biết có đang bước đi khi bưng mâm)
+  private moveSpeed = 0;
+  private lastPos = new THREE.Vector3();
   private readonly _v1 = new THREE.Vector3();
   private readonly _v2 = new THREE.Vector3();
 
   // Đạo cụ
-  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR' | 'broom', THREE.Object3D> = {} as any;
+  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR' | 'broom' | 'tray', THREE.Object3D> = {} as any;
 
   // Billboard tên và bong bóng chat
   private nameSprite: THREE.Sprite | null = null;
@@ -813,6 +819,12 @@ export class PlayerAvatar {
     this.hips.add(broom);
     this.props.broom = broom;
 
+    // Mâm cơm bưng trên hai tay
+    const tray = PlayerTrayMesh();
+    tray.scale.setScalar(0.85);
+    this.hips.add(tray);
+    this.props.tray = tray;
+
     for (const p of Object.values(this.props)) p.visible = false;
   }
 
@@ -969,6 +981,13 @@ export class PlayerAvatar {
       this.group.rotation.y += diffRy * k;
     }
 
+    // Tốc độ di chuyển (mượt) dùng cho dáng bưng mâm vừa đi vừa bước
+    if (delta > 0) {
+      const sp = this.lastPos.distanceTo(this.group.position) / delta;
+      this.moveSpeed += (Math.min(sp, 8) - this.moveSpeed) * Math.min(1, delta * 10);
+    }
+    this.lastPos.copy(this.group.position);
+
     // 3. Đổi hành động -> bắt đầu đếm lại thời gian
     if (this.currentAnim !== this.lastAnim) {
       this.lastAnim = this.currentAnim;
@@ -1021,7 +1040,7 @@ export class PlayerAvatar {
 
   private computePose(anim: ActionType, t: number, elapsed: number): Pose {
     const p: Pose = { ...IDLE_POSE };
-    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false, broom: false };
+    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false, broom: false, tray: false };
 
     switch (anim) {
       case 'idle': {
@@ -1196,6 +1215,49 @@ export class PlayerAvatar {
         p.footR = -0.04;
         show.broom = true;
         this.props.broom.rotation.set(-1.25 + 0.3 * (1 - active), swing, 0);
+        break;
+      }
+
+      case 'pickup': {
+        // Phụ bếp: cúi xuống quầy, nâng mâm cơm lên ngang ngực
+        const lean = pulse(t, 0, 1.2);
+        const lifted = smooth((t - 0.55) / 0.4);
+        setArms(p, mixArm(ARM.holdLow, ARM.hold, lifted));
+        p.bend = 0.35 * lean;
+        p.headX = 0.3 * lean;
+        show.tray = t > 0.55;
+        this.props.tray.position.set(0, 0.14 + 0.08 * lifted, 0.4 - 0.06 * lifted);
+        break;
+      }
+
+      case 'carry': {
+        // Bưng mâm cơm bằng hai tay; đang đi thì bước chân nhịp nhàng, giữ mâm thăng bằng
+        setArms(p, ARM.hold);
+        show.tray = true;
+        this.props.tray.position.set(0, 0.22, 0.34);
+        if (this.moveSpeed > 0.4) {
+          const s = Math.sin(elapsed * 8);
+          const c = Math.cos(elapsed * 8);
+          p.hipY = Math.abs(c) * 0.018;
+          p.footL = s * 0.09;
+          p.footR = -s * 0.09;
+          p.liftL = Math.max(0, c) * 0.04;
+          p.liftR = Math.max(0, -c) * 0.04;
+          p.sway = s * 0.02;
+        }
+        p.headX = 0.08;
+        break;
+      }
+
+      case 'serve': {
+        // Cúi người đặt mâm cơm xuống bàn rồi đứng thẳng, chắp tay
+        const place = smooth(t / 0.6) * (1 - smooth((t - 0.95) / 0.35));
+        setArms(p, t < 0.9 ? mixArm(ARM.hold, ARM.pushOut, place) : mixArm(ARM.pray, ARM.pushOut, place));
+        p.bend = 0.32 * place;
+        p.headX = 0.25 * place;
+        p.palms = t > 1.1 ? 1 : 0;
+        show.tray = t < 0.85;
+        this.props.tray.position.set(0, 0.22 - 0.1 * place, 0.34 + 0.12 * place);
         break;
       }
 
