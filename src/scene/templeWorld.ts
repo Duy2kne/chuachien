@@ -180,37 +180,42 @@ export function makeRoofGroup(
   return group;
 }
 
-// Mâm cơm chay: mâm gỗ tròn, bát cơm trắng, đĩa rau xanh, bát canh, đôi đũa
-export function PlayerTrayMesh(): THREE.Group {
+// Một chiếc bánh bao: vỏ trắng ngà, nếp xoắn trên đỉnh, chấm đỏ
+const bunMat = new THREE.MeshStandardMaterial({ color: 0xfaf1df, roughness: 0.85 });
+const bunDotMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.6 });
+export function makeBunMesh(): THREE.Group {
   const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x7a4a24, roughness: 0.6 });
-  const porcelain = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25 });
-  const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.035, 22), wood);
-  tray.position.y = 0.018;
-  g.add(tray);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.015, 6, 22), wood);
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.065, 16, 12), bunMat);
+  body.scale.set(1, 0.72, 1);
+  body.position.y = 0.045;
+  g.add(body);
+  const twist = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.03, 10), bunMat);
+  twist.position.y = 0.098;
+  g.add(twist);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.009, 6, 6), bunDotMat);
+  dot.position.y = 0.112;
+  g.add(dot);
+  return g;
+}
+
+// Đĩa sứ trắng viền lam, có thể bày 0-3 bánh bao
+const plateMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25 });
+const plateRimMat = new THREE.MeshStandardMaterial({ color: 0x1e40af, roughness: 0.3 });
+export function makeBunPlateMesh(buns = 3): THREE.Group {
+  const g = new THREE.Group();
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.14, 0.03, 28), plateMat);
+  plate.position.y = 0.015;
+  g.add(plate);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.008, 6, 32), plateRimMat);
   rim.rotation.x = Math.PI / 2;
-  rim.position.y = 0.04;
+  rim.position.y = 0.03;
   g.add(rim);
-  const bowlGeo = new THREE.SphereGeometry(0.075, 12, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
-  const dishes: [number, number, number][] = [[-0.12, -0.05, 0xffffff], [0.12, -0.06, 0x16a34a], [0.0, 0.13, 0xf59e0b]];
-  for (const [x, z, food] of dishes) {
-    // Nửa dưới hình cầu = bát ngửa, miệng bát ở trên
-    const bowl = new THREE.Mesh(bowlGeo, porcelain);
-    bowl.position.set(x, 0.11, z);
-    g.add(bowl);
-    const fill = new THREE.Mesh(new THREE.SphereGeometry(0.066, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: food, roughness: 0.8 }));
-    fill.scale.y = 0.45;
-    fill.position.set(x, 0.1, z);
-    g.add(fill);
-  }
-  const chop = new THREE.MeshStandardMaterial({ color: 0x3b2a1a });
-  for (const dx of [-0.012, 0.012]) {
-    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.3, 4), chop);
-    stick.rotation.z = Math.PI / 2;
-    stick.rotation.y = 0.3;
-    stick.position.set(0.02, 0.05, -0.2 + dx);
-    g.add(stick);
+  const spots: [number, number][] = [[-0.07, 0.04], [0.07, 0.04], [0, -0.075]];
+  for (let i = 0; i < Math.min(buns, 3); i++) {
+    const bun = makeBunMesh();
+    bun.position.set(spots[i][0], 0.025, spots[i][1]);
+    bun.rotation.y = i * 1.7;
+    g.add(bun);
   }
   return g;
 }
@@ -285,6 +290,7 @@ export class TempleWorld {
   private trayLayer = new THREE.Group();
   private trayMeshes = new Map<string, THREE.Group>();
   private steamSprites: THREE.Sprite[] = [];
+  private counterPlate: THREE.Group | null = null;
 
   // Đống lá đa rụng trên sân (đồng bộ từ server)
   public leafLayer = new THREE.Group();
@@ -2523,42 +2529,71 @@ export class TempleWorld {
     hall.add(counterTop);
 
     const bronze = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, metalness: 0.7, roughness: 0.35 });
+    const top = D.counterTop;
+    // Bếp lò + nồi đồng (đầu quầy)
     const stove = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 0.3, 16), new THREE.MeshStandardMaterial({ color: 0x3f3a36, roughness: 0.9 }));
-    stove.position.set(25, 1.16, 22.2);
+    stove.position.set(D.stove.x, top + 0.15, D.stove.z);
     hall.add(stove);
     const fire = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), new THREE.MeshBasicMaterial({ color: 0xff6a1a }));
-    fire.position.set(25, 1.32, 22.2);
+    fire.position.set(D.stove.x, top + 0.31, D.stove.z);
     hall.add(fire);
     const pot = new THREE.Mesh(new THREE.SphereGeometry(0.45, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), bronze);
     pot.rotation.x = Math.PI;
-    pot.position.set(25, 1.72, 22.2);
+    pot.position.set(D.stove.x, top + 0.71, D.stove.z);
     hall.add(pot);
     const potLid = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.42, 0.06, 20), bronze);
-    potLid.position.set(25, 1.75, 22.2);
+    potLid.position.set(D.stove.x, top + 0.74, D.stove.z);
     hall.add(potLid);
     const fireLight = new THREE.PointLight(0xff8a3a, 1.2, 6);
-    fireLight.position.set(24.5, 1.6, 22.2);
+    fireLight.position.set(D.stove.x - 0.5, 1.6, D.stove.z);
     hall.add(fireLight);
-    // Nồi canh thứ hai
-    const pot2 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.26, 0.38, 18), bronze);
-    pot2.position.set(25, 1.2, 24.4);
-    hall.add(pot2);
 
-    // Hơi nước bốc lên từ nồi
+    // Chồng đĩa sứ
+    for (let i = 0; i < 6; i++) {
+      const plate = makeBunPlateMesh(0);
+      plate.position.set(D.plateStack.x, top + i * 0.03, D.plateStack.z);
+      hall.add(plate);
+    }
+
+    // Xửng tre hấp bánh bao (2 tầng, tầng trên mở nắp thấy bánh)
+    const bamboo = new THREE.MeshStandardMaterial({ color: 0xc9a46a, roughness: 0.85 });
+    const bambooDark = new THREE.MeshStandardMaterial({ color: 0x9c7a45, roughness: 0.85 });
+    for (let tier = 0; tier < 2; tier++) {
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.14, 24, 1, true), bamboo);
+      ring.material.side = THREE.DoubleSide;
+      ring.position.set(D.steamer.x, top + 0.07 + tier * 0.15, D.steamer.z);
+      hall.add(ring);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.012, 6, 24), bambooDark);
+      band.rotation.x = Math.PI / 2;
+      band.position.set(D.steamer.x, top + 0.14 + tier * 0.15, D.steamer.z);
+      hall.add(band);
+    }
+    const steamerFloor = new THREE.Mesh(new THREE.CircleGeometry(0.29, 24), bambooDark);
+    steamerFloor.rotation.x = -Math.PI / 2;
+    steamerFloor.position.set(D.steamer.x, top + 0.17, D.steamer.z);
+    hall.add(steamerFloor);
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const bun = makeBunMesh();
+      bun.position.set(D.steamer.x + Math.cos(a) * 0.15, top + 0.17, D.steamer.z + Math.sin(a) * 0.15);
+      hall.add(bun);
+    }
+    // Nắp xửng dựng nghiêng bên cạnh
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.31, 0.06, 24), bambooDark);
+    lid.position.set(D.steamer.x + 0.35, top + 0.3, D.steamer.z + 0.55);
+    lid.rotation.x = 1.2;
+    hall.add(lid);
+
+    // Hơi nước bốc lên từ nồi và xửng hấp
     const steamTex = getSmokeSpriteTexture();
     for (let i = 0; i < 10; i++) {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTex, transparent: true, depthWrite: false, opacity: 0 }));
       sp.userData.phase = i / 10;
-      sp.userData.base = i % 2 === 0 ? new THREE.Vector3(25, 1.8, 22.2) : new THREE.Vector3(25, 1.42, 24.4);
+      sp.userData.base = i % 2 === 0
+        ? new THREE.Vector3(D.stove.x, top + 0.8, D.stove.z)
+        : new THREE.Vector3(D.steamer.x, top + 0.3, D.steamer.z);
       this.steamSprites.push(sp);
       hall.add(sp);
-    }
-
-    // Chồng mâm gỗ trên quầy
-    for (let i = 0; i < 4; i++) {
-      const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.3, 0.04, 20), darkWood);
-      tray.position.set(24.75, 1.03 + i * 0.045, 26.2);
-      hall.add(tray);
     }
 
     // Đèn lồng giấy treo trần
@@ -2586,6 +2621,18 @@ export class TempleWorld {
     this.scene.add(this.trayLayer);
   }
 
+  // Đĩa bánh bao đang bày trên quầy: null = chưa lấy đĩa, 0-3 = số bánh bao trên đĩa
+  public setCounterPlate(buns: number | null) {
+    if (this.counterPlate) {
+      this.scene.remove(this.counterPlate);
+      this.counterPlate = null;
+    }
+    if (buns === null) return;
+    this.counterPlate = makeBunPlateMesh(buns);
+    this.counterPlate.position.set(DINING.workPlate.x, DINING.counterTop, DINING.workPlate.z);
+    this.scene.add(this.counterPlate);
+  }
+
   // Ẩn mái nhà ăn khi người chơi đang ở trong để nhìn thấy bên trong
   public updateInterior(x: number, z: number) {
     if (!this.diningRoof) return;
@@ -2611,7 +2658,7 @@ export class TempleWorld {
     for (const t of list) {
       if (this.trayMeshes.has(t.id)) continue;
       const slot = traySlot(t.slot);
-      const g = PlayerTrayMesh();
+      const g = makeBunPlateMesh(3);
       g.position.set(slot.x, DINING.tableTop, slot.z);
       g.rotation.y = Math.random() * 0.3 - 0.15;
       this.trayLayer.add(g);
@@ -3006,6 +3053,29 @@ export class TempleWorld {
   }
 
   // ===================== ĐỒNG BỘ ĐỒ VẬT =====================
+  // Thêm đồ vật mới (một người vừa thắp hương / dâng hoa / thả đèn) mà không đụng tới đồ đang có
+  public addObjects(incenseList: IncenseItem[], flowerList: FlowerItem[], lanternList: LanternItem[]) {
+    for (const item of incenseList) {
+      if (this.incenseMeshMap.has(item.id)) continue;
+      const mesh = this.createIncenseStickMesh(item.x, item.y, item.z);
+      this.scene.add(mesh);
+      this.incenseMeshMap.set(item.id, mesh);
+    }
+    for (const item of flowerList) {
+      if (this.flowerMeshMap.has(item.id)) continue;
+      const mesh = this.createAltarLotusMesh(item.x, item.y, item.z);
+      this.scene.add(mesh);
+      this.flowerMeshMap.set(item.id, mesh);
+    }
+    for (const item of lanternList) {
+      if (this.lanternMeshMap.has(item.id)) continue;
+      const mesh = this.createFloatingLanternMesh(item);
+      this.lanternLayer.add(mesh);
+      this.lanternMeshMap.set(item.id, mesh);
+    }
+  }
+
+  // Đồng bộ toàn bộ danh sách (vào phòng, đổi phòng, server dọn đồ hết hạn): xoá đồ không còn trong danh sách
   public syncObjects(incenseList: IncenseItem[], flowerList: FlowerItem[], lanternList: LanternItem[]) {
     const currentIncenseIds = new Set(incenseList.map(i => i.id));
     for (const [id, mesh] of this.incenseMeshMap.entries()) {
