@@ -20,7 +20,8 @@ export const ACTION_DURATION: Partial<Record<ActionType, number>> = {
   bell: 3.0,
   drum: 3.0,
   lantern: 3.6,
-  wave: 2.6
+  wave: 2.6,
+  sweep: 3.4
 };
 
 export type AvatarSoundEvent = 'mo' | 'chime';
@@ -374,7 +375,7 @@ export class PlayerAvatar {
   private readonly _v2 = new THREE.Vector3();
 
   // Đạo cụ
-  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR', THREE.Object3D> = {} as any;
+  private props: Record<'incense' | 'flower' | 'lantern' | 'mo' | 'mallet' | 'drumL' | 'drumR' | 'broom', THREE.Object3D> = {} as any;
 
   // Billboard tên và bong bóng chat
   private nameSprite: THREE.Sprite | null = null;
@@ -716,6 +717,27 @@ export class PlayerAvatar {
       this.props[key] = stick;
     }
 
+    // Chổi tre quét lá: cán cầm ở hai tay, bó chổi chạm đất phía trước
+    const broom = new THREE.Group();
+    broom.rotation.order = 'YXZ';
+    const handleMat = new THREE.MeshStandardMaterial({ color: 0xa3793f, roughness: 0.7 });
+    const broomHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 1.0, 8), handleMat);
+    broomHandle.position.y = -0.45;
+    broom.add(broomHandle);
+    const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 10), new THREE.MeshStandardMaterial({ color: 0x5b3a1a }));
+    tie.position.y = -0.94;
+    broom.add(tie);
+    const straw = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.17, 0.36, 14, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0xc8a24a, roughness: 0.95, side: THREE.DoubleSide })
+    );
+    straw.scale.z = 0.4;
+    straw.position.y = -1.13;
+    broom.add(straw);
+    broom.position.set(0, 0.22, 0.3);
+    this.hips.add(broom);
+    this.props.broom = broom;
+
     for (const p of Object.values(this.props)) p.visible = false;
   }
 
@@ -907,7 +929,7 @@ export class PlayerAvatar {
 
   private computePose(anim: ActionType, t: number, elapsed: number): Pose {
     const p: Pose = { ...IDLE_POSE };
-    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false };
+    const show = { incense: false, flower: false, lantern: false, mo: false, mallet: false, drumL: false, drumR: false, broom: false };
 
     switch (anim) {
       case 'idle': {
@@ -1063,6 +1085,25 @@ export class PlayerAvatar {
         p.headX = 0.3;
         show.lantern = t < 2.6;
         this.props.lantern.position.set(0, 0.22, 0.32 + release * 0.04);
+        break;
+      }
+
+      case 'sweep': {
+        // Cúi người, hai tay cầm chổi tre quét qua lại sát mặt sân
+        const active = smooth(t / 0.4) * (1 - smooth((t - 3.0) / 0.4));
+        const swing = Math.sin(t * 4.4) * 0.55 * active;
+        setArms(p, ARM.holdLow);
+        p.lsy += swing * 0.35;
+        p.rsy += swing * 0.35;
+        p.lsx -= 0.15 * active;
+        p.rsx -= 0.15 * active;
+        p.bend = 0.3 * active;
+        p.sway = -swing * 0.08;
+        p.headX = 0.35 * active;
+        p.footL = 0.06;
+        p.footR = -0.04;
+        show.broom = true;
+        this.props.broom.rotation.set(-0.95 + 0.25 * (1 - active), swing, 0);
         break;
       }
 
