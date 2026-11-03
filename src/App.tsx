@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { TempleWorld } from './scene/templeWorld.js';
-import { PlayerAvatar } from './scene/playerAvatar.js';
+import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
 import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem } from './types.js';
@@ -15,6 +15,29 @@ import { AudioSettingsModal } from './components/AudioSettingsModal.js';
 import { Sun, Moon, Music, Maximize2, Sparkles } from 'lucide-react';
 
 const _targetLook = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+const _camPivot = new THREE.Vector3();
+const _camRay = new THREE.Raycaster();
+
+// Các hành động dạng bật/tắt (bấm lần nữa để dừng)
+const TOGGLE_ACTIONS: ActionType[] = ['namaste', 'meditate', 'wooden_fish'];
+
+// Toạ độ các điểm trong chùa (khớp với templeWorld.ts)
+const HALL_FOCUS = { x: 0, z: -14.5 };   // Tượng Phật trong chính điện
+const POND_CENTER = { x: -18, z: 24 };   // Hồ sen
+const POND_EDGE_RADIUS = 9.0;           // Đứng ngay bên ngoài bờ đá
+const faceTo = (x: number, z: number, tx: number, tz: number) => Math.atan2(tx - x, tz - z);
+
+interface AutoWalkTarget {
+  x: number;
+  z: number;
+  ry: number;
+  anim: ActionType;
+  text?: string;
+  startTime: number;
+  bestDist: number;
+  lastProgress: number;
+}
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -83,7 +106,8 @@ export default function App() {
   const keysPressed = useRef<Record<string, boolean>>({});
   const joystickVector = useRef<{ x: number; y: number; isRunning: boolean }>({ x: 0, y: 0, isRunning: false });
   const cameraAngle = useRef({ theta: 0, phi: 0.25, dist: 5.4 });
-  const autoWalkTarget = useRef<{ x: number; z: number; ry: number; anim: ActionType; startTime: number } | null>(null);
+  const autoWalkTarget = useRef<AutoWalkTarget | null>(null);
+  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
 
   // Pointer IDs tracking for multi-touch (Left = Joystick, Right = Camera/Pinch)
   const joystickPointerId = useRef<number | null>(null);
@@ -117,9 +141,7 @@ export default function App() {
 
     network.onPlayerJoined = (player) => {
       if (sceneRef.current && !otherAvatarsRef.current.has(player.id)) {
-        const avatar = new PlayerAvatar(player, false);
-        sceneRef.current.add(avatar.group);
-        otherAvatarsRef.current.set(player.id, avatar);
+        otherAvatarsRef.current.set(player.id, createAvatar(player, false));
         updateOnlinePlayers();
       }
     };
@@ -165,14 +187,22 @@ export default function App() {
     };
 
     network.onBellRung = (data) => {
-      worldRef.current?.triggerBellRing();
-      sound.playBigBell(1.0);
+      // Chày gỗ chạm chuông sau động tác kéo dây (~0.9s)
+      setTimeout(() => {
+        worldRef.current?.triggerBellRing();
+        sound.playBigBell(1.0);
+      }, 900);
       showToast(`🔔 ${data.playerName} vừa thỉnh Đại Hồng Chung`);
     };
 
     network.onDrumBeaten = (data) => {
-      worldRef.current?.triggerDrumBeat();
-      sound.playDrum(1.0);
+      // 3 tiếng trống khớp với 3 nhịp dùi của nhân vật
+      for (const ms of [600, 1200, 1800]) {
+        setTimeout(() => {
+          worldRef.current?.triggerDrumBeat();
+          sound.playDrum(1.0);
+        }, ms);
+      }
       showToast(`🥁 ${data.playerName} vừa đánh Trống Bát Nhã`);
     };
 
@@ -182,6 +212,28 @@ export default function App() {
     network.onObjectsSync = (data) => worldRef.current?.syncObjects(data.incense, data.flowers, data.lanterns);
     network.onConnectionStateChange = (_connected, msg) => { if (msg) showToast(msg); };
   }, []);
+
+  const playAvatarSound = (type: AvatarSoundEvent, avatar: PlayerAvatar) => {
+    const self = selfAvatarRef.current;
+    const dist = self ? self.group.position.distanceTo(avatar.group.position) : 0;
+    if (dist > 30) return;
+    if (type === 'mo') sound.playWoodenFish(Math.max(1, dist / 4));
+    else if (dist < 14) sound.playChime();
+  };
+
+  const createAvatar = (data: PlayerData, isSelf: boolean) => {
+    const avatar = new PlayerAvatar(data, isSelf);
+    avatar.onSound = playAvatarSound;
+    if (isSelf) {
+      avatar.onActionFinished = (anim) => {
+        if (avatar.currentAnim !== anim) return;
+        avatar.currentAnim = 'idle';
+        setCurrentAnim('idle');
+      };
+    }
+    sceneRef.current?.add(avatar.group);
+    return avatar;
+  };
 
   const updateOnlinePlayers = () => {
     const list: PlayerData[] = [];
@@ -199,9 +251,11 @@ export default function App() {
 
   const addMeritEffect = (gain: number) => {
     if (gain <= 0) return;
-    const nextMerit = merit + gain;
-    setMerit(nextMerit);
-    try { localStorage.setItem('chua_merit', nextMerit.toString()); } catch {}
+    setMerit(prev => {
+      const next = prev + gain;
+      try { localStorage.setItem('chua_merit', next.toString()); } catch {}
+      return next;
+    });
 
     const id = Date.now();
     setFloatingMerit(prev => [...prev, { id, amount: gain }]);
@@ -241,7 +295,7 @@ export default function App() {
       52,
       container.clientWidth / container.clientHeight,
       0.3,
-      300
+      1000
     );
     cameraRef.current = camera;
 
@@ -337,49 +391,74 @@ export default function App() {
     worldRef.current?.setDayNight(isNight);
   }, [isNight]);
 
+  // Bắt đầu tự đi tới một vị trí (bấm hành động hoặc chạm mặt đất)
+  const startAutoWalk = (x: number, z: number, ry: number, anim: ActionType, text?: string) => {
+    const now = Date.now();
+    autoWalkTarget.current = { x, z, ry, anim, text, startTime: now, bestDist: Infinity, lastProgress: now };
+    setIsNavigating(true);
+    if (destinationMarkerRef.current) {
+      destinationMarkerRef.current.position.set(x, (worldRef.current?.checkCollision(x, z).height || 0) + 0.05, z);
+    }
+  };
+
   // Điều khiển di chuyển nhân vật
   const handlePlayerMovement = (delta: number, elapsed: number) => {
     const avatar = selfAvatarRef.current;
-    if (!avatar || !worldRef.current || !cameraRef.current) return;
+    const world = worldRef.current;
+    if (!avatar || !world || !cameraRef.current) return;
+    const pos = avatar.group.position;
 
     let moveX = 0;
     let moveZ = 0;
     let isRunning = false;
 
-    // 1. Tự động đi tới vị trí khi bấm hành động hoặc chạm vào mặt đất (Tap-to-move)
+    const hasManualInput =
+      keysPressed.current['KeyW'] || keysPressed.current['ArrowUp'] ||
+      keysPressed.current['KeyS'] || keysPressed.current['ArrowDown'] ||
+      keysPressed.current['KeyA'] || keysPressed.current['ArrowLeft'] ||
+      keysPressed.current['KeyD'] || keysPressed.current['ArrowRight'] ||
+      Math.hypot(joystickVector.current.x, joystickVector.current.y) > 0.1;
+
+    // 1. Tự động đi tới vị trí khi bấm hành động hoặc chạm vào mặt đất
+    if (autoWalkTarget.current && hasManualInput) {
+      autoWalkTarget.current = null;
+      setIsNavigating(false);
+    }
+
     if (autoWalkTarget.current) {
       const target = autoWalkTarget.current;
-      const dx = target.x - avatar.group.position.x;
-      const dz = target.z - avatar.group.position.z;
+      const dx = target.x - pos.x;
+      const dz = target.z - pos.z;
       const dist = Math.hypot(dx, dz);
+      const now = Date.now();
 
-      // Nếu có input thủ công thì hủy tự đi
-      const hasManualInput =
-        keysPressed.current['KeyW'] || keysPressed.current['ArrowUp'] ||
-        keysPressed.current['KeyS'] || keysPressed.current['ArrowDown'] ||
-        keysPressed.current['KeyA'] || keysPressed.current['ArrowLeft'] ||
-        keysPressed.current['KeyD'] || keysPressed.current['ArrowRight'] ||
-        Math.hypot(joystickVector.current.x, joystickVector.current.y) > 0.1;
+      if (dist < target.bestDist - 0.05) {
+        target.bestDist = dist;
+        target.lastProgress = now;
+      }
+      // Bị kẹt quá 1.5 giây (hoặc đi quá 8 giây) thì dịch chuyển thẳng tới đích
+      const stuck = now - target.lastProgress > 1500 || now - target.startTime > 8000;
 
-      if (hasManualInput) {
+      if (dist < 0.3 || stuck) {
+        pos.x = target.x;
+        pos.z = target.z;
+        pos.y = world.checkCollision(target.x, target.z).height;
+        avatar.group.rotation.y = target.ry;
         autoWalkTarget.current = null;
         setIsNavigating(false);
-      } else if (dist < 0.4 || Date.now() - target.startTime > 5000) {
-        avatar.group.position.x = target.x;
-        avatar.group.position.z = target.z;
-        if (target.ry !== undefined) avatar.group.rotation.y = target.ry;
-        const targetAnim = target.anim;
-        autoWalkTarget.current = null;
-        setIsNavigating(false);
-        if (targetAnim !== 'walk') triggerActionDirect(targetAnim);
-        return;
+        if (target.anim !== 'walk') {
+          triggerActionDirect(target.anim, target.text);
+        } else if (['walk', 'run'].includes(avatar.currentAnim)) {
+          avatar.currentAnim = 'idle';
+          setCurrentAnim('idle');
+        }
       } else {
-        moveX = (dx / dist);
-        moveZ = (dz / dist);
+        moveX = dx / dist;
+        moveZ = dz / dist;
         isRunning = dist > 6.0;
       }
     } else {
-      // 2. Di chuyển bằng phím hoặc Joystick ảo động
+      // 2. Di chuyển bằng phím hoặc Joystick ảo (tiến/lùi theo hướng camera, trái/phải theo màn hình)
       let forward = 0;
       let strafe = 0;
 
@@ -388,7 +467,6 @@ export default function App() {
       if (keysPressed.current['KeyA'] || keysPressed.current['ArrowLeft']) strafe -= 1;
       if (keysPressed.current['KeyD'] || keysPressed.current['ArrowRight']) strafe += 1;
 
-      // Joystick ảo
       const joyLen = Math.hypot(joystickVector.current.x, joystickVector.current.y);
       if (joyLen > 0.1) {
         strafe += joystickVector.current.x;
@@ -405,8 +483,9 @@ export default function App() {
         const sin = Math.sin(angle);
         const cos = Math.cos(angle);
 
-        moveX = -(forward * sin + strafe * cos);
-        moveZ = -(forward * cos - strafe * sin);
+        // Camera nằm ở hướng (sin, cos) so với nhân vật: tiến = ngược hướng đó, phải = (cos, -sin)
+        moveX = -forward * sin + strafe * cos;
+        moveZ = -forward * cos - strafe * sin;
 
         const len = Math.hypot(moveX, moveZ);
         if (len > 0.01) {
@@ -419,14 +498,28 @@ export default function App() {
     const speed = (isRunning ? 5.2 : 3.0) * delta;
 
     if (Math.hypot(moveX, moveZ) > 0.05) {
-      const nextX = avatar.group.position.x + moveX * speed;
-      const nextZ = avatar.group.position.z + moveZ * speed;
+      const tryMove = (mx: number, mz: number) => {
+        const col = world.checkCollision(pos.x + mx, pos.z + mz);
+        if (!col.allowed) return false;
+        pos.x += mx;
+        pos.z += mz;
+        return true;
+      };
 
-      const col = worldRef.current.checkCollision(nextX, nextZ);
-      if (col.allowed) {
-        avatar.group.position.x = nextX;
-        avatar.group.position.z = nextZ;
-        avatar.group.position.y = THREE.MathUtils.damp(avatar.group.position.y, col.height, 12, delta);
+      // Đi thẳng; nếu vướng thì trượt dọc vật cản; khi tự đi thì thử vòng tránh
+      let moved =
+        tryMove(moveX * speed, moveZ * speed) ||
+        tryMove(moveX * speed, 0) ||
+        tryMove(0, moveZ * speed);
+      if (!moved && autoWalkTarget.current) {
+        for (const turn of [0.8, -0.8, 1.4, -1.4]) {
+          const c = Math.cos(turn);
+          const sn = Math.sin(turn);
+          if (tryMove((moveX * c - moveZ * sn) * speed, (moveX * sn + moveZ * c) * speed)) {
+            moved = true;
+            break;
+          }
+        }
       }
 
       const targetRy = Math.atan2(moveX, moveZ);
@@ -436,35 +529,34 @@ export default function App() {
       avatar.group.rotation.y += diffRy * Math.min(1, delta * 15);
 
       const anim = isRunning ? 'run' : 'walk';
-      avatar.currentAnim = anim;
-      setCurrentAnim(anim);
-
-      network.sendMove(
-        avatar.group.position.x,
-        avatar.group.position.y,
-        avatar.group.position.z,
-        avatar.group.rotation.y,
-        anim
-      );
-    } else if (!autoWalkTarget.current) {
-      if (['walk', 'run'].includes(avatar.currentAnim)) {
-        avatar.currentAnim = 'idle';
-        setCurrentAnim('idle');
-        network.sendMove(
-          avatar.group.position.x,
-          avatar.group.position.y,
-          avatar.group.position.z,
-          avatar.group.rotation.y,
-          'idle'
-        );
+      if (avatar.currentAnim !== anim) {
+        avatar.currentAnim = anim;
+        setCurrentAnim(anim);
       }
+    } else if (!autoWalkTarget.current && ['walk', 'run'].includes(avatar.currentAnim)) {
+      avatar.currentAnim = 'idle';
+      setCurrentAnim('idle');
     }
 
-    // 3. Camera theo dõi góc nhìn thứ 3
-    const { theta, phi, dist } = cameraAngle.current;
-    const targetCamX = avatar.group.position.x + Math.sin(theta) * Math.cos(phi) * dist;
-    const targetCamY = avatar.group.position.y + Math.sin(phi) * dist + 1.25;
-    const targetCamZ = avatar.group.position.z + Math.cos(theta) * Math.cos(phi) * dist;
+    // Độ cao theo nền (bậc thềm chính điện, lầu chuông)
+    pos.y = THREE.MathUtils.damp(pos.y, world.checkCollision(pos.x, pos.z, 0).height, 12, delta);
+
+    // Đồng bộ vị trí + hành động (tự giới hạn ~12 lần/giây, chỉ gửi khi thay đổi)
+    network.sendMove(pos.x, pos.y, pos.z, avatar.group.rotation.y, avatar.currentAnim);
+
+    // 3. Camera theo dõi góc nhìn thứ 3 (tự rút lại gần khi bị cột, tường, lư hương che)
+    const { theta, phi } = cameraAngle.current;
+    _camDir.set(Math.sin(theta) * Math.cos(phi), Math.sin(phi), Math.cos(theta) * Math.cos(phi)).normalize();
+    _camPivot.set(pos.x, pos.y + 1.25, pos.z);
+    let dist = cameraAngle.current.dist;
+    _camRay.set(_camPivot, _camDir);
+    _camRay.far = dist;
+    const blockHit = _camRay.intersectObjects(world.cameraBlockers, false)[0];
+    if (blockHit) dist = Math.max(1.8, blockHit.distance - 0.35);
+    // Không để camera chui xuống dưới mặt đất
+    const targetCamX = _camPivot.x + _camDir.x * dist;
+    const targetCamY = Math.max(pos.y + 0.4, _camPivot.y + _camDir.y * dist);
+    const targetCamZ = _camPivot.z + _camDir.z * dist;
 
     cameraRef.current.position.set(
       THREE.MathUtils.damp(cameraRef.current.position.x, targetCamX, 10, delta),
@@ -504,89 +596,88 @@ export default function App() {
   // Nửa phải = Xoay camera & Pinch-to-zoom & Chạm để đi (Tap-to-move)
   // =========================================================================
   const handlePointerDown = (e: React.PointerEvent) => {
-    // Chặn kéo trang và context menu
-    const isLeftHalf = e.clientX < window.innerWidth / 2;
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
 
-    if (isLeftHalf && joystickPointerId.current === null) {
-      // 1. Chạm nửa trái -> Hiện Joystick ngay dưới ngón tay
+    // Joystick chỉ dành cho cảm ứng ở nửa trái màn hình; chuột luôn dùng để xoay camera / bấm để đi
+    const isTouchJoystick = e.pointerType !== 'mouse' && e.clientX < window.innerWidth / 2;
+
+    if (isTouchJoystick && joystickPointerId.current === null) {
       joystickPointerId.current = e.pointerId;
-      setDynamicJoystick({
-        visible: true,
-        originX: e.clientX,
-        originY: e.clientY,
-        knobX: 0,
-        knobY: 0
-      });
+      setDynamicJoystick({ visible: true, originX: e.clientX, originY: e.clientY, knobX: 0, knobY: 0 });
       joystickVector.current = { x: 0, y: 0, isRunning: false };
-    } else {
-      // 2. Chạm nửa phải -> Quản lý camera orbit hoặc pinch zoom hoặc tap
-      if (cameraPointerId.current === null) {
-        cameraPointerId.current = e.pointerId;
-        lastCameraPointerPos.current = { x: e.clientX, y: e.clientY };
-        tapCandidate.current = { startTime: Date.now(), startX: e.clientX, startY: e.clientY };
-      } else if (secondPointerId.current === null) {
-        secondPointerId.current = e.pointerId;
-        lastPinchDistance.current = null;
-        tapCandidate.current = null; // Khi có 2 ngón thì không phải là tap
-      }
+      return;
+    }
+
+    if (cameraPointerId.current === null) {
+      cameraPointerId.current = e.pointerId;
+      lastCameraPointerPos.current = { x: e.clientX, y: e.clientY };
+      tapCandidate.current = { startTime: Date.now(), startX: e.clientX, startY: e.clientY };
+    } else if (secondPointerId.current === null) {
+      secondPointerId.current = e.pointerId;
+      lastPinchDistance.current = null;
+      tapCandidate.current = null; // 2 ngón thì không phải là chạm để đi
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    // 1. Cập nhật ngón tay điều khiển Joystick
+    if (activePointers.current.has(e.pointerId)) {
+      activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // 1. Ngón tay điều khiển Joystick
     if (e.pointerId === joystickPointerId.current) {
-      const radius = 60; // Bán kính joystick 60px (vòng ngoài 120px)
+      const radius = 60;
       const dx = e.clientX - dynamicJoystick.originX;
       const dy = e.clientY - dynamicJoystick.originY;
       const dist = Math.hypot(dx, dy);
-
-      let clampedX = dx;
-      let clampedY = dy;
-      if (dist > radius) {
-        clampedX = (dx / dist) * radius;
-        clampedY = (dy / dist) * radius;
-      }
+      const clampedX = dist > radius ? (dx / dist) * radius : dx;
+      const clampedY = dist > radius ? (dy / dist) * radius : dy;
 
       setDynamicJoystick(prev => ({ ...prev, knobX: clampedX, knobY: clampedY }));
 
-      // Vùng chết (Dead zone) 10% để không bị trôi
+      // Vùng chết 10%, kéo xa hơn 70% bán kính thì chạy
       const normalizedDist = dist / radius;
-      if (normalizedDist > 0.1) {
-        // Kéo xa hơn 70% bán kính thì chạy
-        const isRun = normalizedDist > 0.7;
-        joystickVector.current = {
-          x: clampedX / radius,
-          y: clampedY / radius,
-          isRunning: isRun
-        };
-      } else {
-        joystickVector.current = { x: 0, y: 0, isRunning: false };
+      joystickVector.current = normalizedDist > 0.1
+        ? { x: clampedX / radius, y: clampedY / radius, isRunning: normalizedDist > 0.7 }
+        : { x: 0, y: 0, isRunning: false };
+      return;
+    }
+
+    if (e.pointerId !== cameraPointerId.current && e.pointerId !== secondPointerId.current) return;
+
+    if (tapCandidate.current) {
+      const moveDist = Math.hypot(e.clientX - tapCandidate.current.startX, e.clientY - tapCandidate.current.startY);
+      if (moveDist > 12) tapCandidate.current = null;
+    }
+
+    // 2. Hai ngón: chụm / mở để zoom
+    if (cameraPointerId.current !== null && secondPointerId.current !== null) {
+      const a = activePointers.current.get(cameraPointerId.current);
+      const b = activePointers.current.get(secondPointerId.current);
+      if (a && b) {
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (lastPinchDistance.current !== null) {
+          cameraAngle.current.dist = Math.max(3.0, Math.min(13.0, cameraAngle.current.dist - (d - lastPinchDistance.current) * 0.02));
+        }
+        lastPinchDistance.current = d;
       }
       return;
     }
 
-    // 2. Cập nhật ngón tay xoay Camera hoặc Zoom
-    if (e.pointerId === cameraPointerId.current || e.pointerId === secondPointerId.current) {
-      // Hủy tap nếu dịch chuyển quá 12px
-      if (tapCandidate.current) {
-        const moveDist = Math.hypot(e.clientX - tapCandidate.current.startX, e.clientY - tapCandidate.current.startY);
-        if (moveDist > 12) tapCandidate.current = null;
-      }
-
-      // Xoay 1 ngón
-      if (secondPointerId.current === null && e.pointerId === cameraPointerId.current) {
-        const dx = e.clientX - lastCameraPointerPos.current.x;
-        const dy = e.clientY - lastCameraPointerPos.current.y;
-        lastCameraPointerPos.current = { x: e.clientX, y: e.clientY };
-
-        cameraAngle.current.theta += dx * 0.0055;
-        cameraAngle.current.phi = Math.max(0.06, Math.min(1.22, cameraAngle.current.phi + dy * 0.0055));
-      }
+    // 3. Một ngón / kéo chuột: xoay camera quanh nhân vật
+    if (e.pointerId === cameraPointerId.current) {
+      const dx = e.clientX - lastCameraPointerPos.current.x;
+      const dy = e.clientY - lastCameraPointerPos.current.y;
+      lastCameraPointerPos.current = { x: e.clientX, y: e.clientY };
+      cameraAngle.current.theta -= dx * 0.0055;
+      cameraAngle.current.phi = Math.max(0.06, Math.min(1.22, cameraAngle.current.phi + dy * 0.0045));
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    // Thả ngón tay Joystick
+    activePointers.current.delete(e.pointerId);
+
     if (e.pointerId === joystickPointerId.current) {
       joystickPointerId.current = null;
       setDynamicJoystick(prev => ({ ...prev, visible: false, knobX: 0, knobY: 0 }));
@@ -594,24 +685,27 @@ export default function App() {
       return;
     }
 
-    // Thả ngón tay thứ 2 (khi pinch zoom)
     if (e.pointerId === secondPointerId.current) {
       secondPointerId.current = null;
       lastPinchDistance.current = null;
       return;
     }
 
-    // Thả ngón tay camera chính -> Kiểm tra xem có phải là CHẠM NHANH ĐỂ ĐI (Tap-to-move)
     if (e.pointerId === cameraPointerId.current) {
       cameraPointerId.current = null;
+      // Ngón còn lại (nếu có) tiếp tục xoay camera
+      if (secondPointerId.current !== null) {
+        cameraPointerId.current = secondPointerId.current;
+        secondPointerId.current = null;
+        lastPinchDistance.current = null;
+        const rest = activePointers.current.get(cameraPointerId.current);
+        if (rest) lastCameraPointerPos.current = { ...rest };
+      }
 
       if (tapCandidate.current) {
         const duration = Date.now() - tapCandidate.current.startTime;
         const moveDist = Math.hypot(e.clientX - tapCandidate.current.startX, e.clientY - tapCandidate.current.startY);
-
-        if (duration < 280 && moveDist < 12) {
-          handleTapRaycast(e.clientX, e.clientY);
-        }
+        if (duration < 300 && moveDist < 12) handleTapRaycast(e.clientX, e.clientY);
         tapCandidate.current = null;
       }
     }
@@ -629,8 +723,8 @@ export default function App() {
     raycaster.setFromCamera(mouse, cameraRef.current);
 
     // 1. Kiểm tra chạm vào đèn hoa đăng trên hồ sen
-    if (worldRef.current?.pondGroup) {
-      const pondHits = raycaster.intersectObjects(worldRef.current.pondGroup.children, true);
+    if (worldRef.current) {
+      const pondHits = raycaster.intersectObjects(worldRef.current.lanternLayer.children, true);
       for (const hit of pondHits) {
         let curr: THREE.Object3D | null = hit.object;
         while (curr) {
@@ -660,20 +754,14 @@ export default function App() {
       if (hit.point.y >= -0.2 && hit.point.y <= 1.2 && Math.abs(hit.point.x) < 36 && hit.point.z > -25 && hit.point.z < 45) {
         // Kiểm tra điểm chạm không nằm trong vùng cản
         const col = worldRef.current?.checkCollision(hit.point.x, hit.point.z);
-        if (col && col.allowed) {
-          autoWalkTarget.current = {
-            x: hit.point.x,
-            z: hit.point.z,
-            ry: Math.atan2(hit.point.x - (selfAvatarRef.current?.group.position.x || 0), hit.point.z - (selfAvatarRef.current?.group.position.z || 0)),
-            anim: 'walk',
-            startTime: Date.now()
-          };
-          setIsNavigating(true);
-
-          // Cập nhật vị trí vòng đánh dấu điểm đến màu vàng
-          if (destinationMarkerRef.current) {
-            destinationMarkerRef.current.position.set(hit.point.x, hit.point.y + 0.04, hit.point.z);
-          }
+        const self = selfAvatarRef.current;
+        if (col && col.allowed && self) {
+          startAutoWalk(
+            hit.point.x,
+            hit.point.z,
+            faceTo(self.group.position.x, self.group.position.z, hit.point.x, hit.point.z),
+            'walk'
+          );
           return;
         }
       }
@@ -702,15 +790,11 @@ export default function App() {
       });
 
       if (sceneRef.current) {
-        const selfAvatar = new PlayerAvatar(res.self, true);
-        sceneRef.current.add(selfAvatar.group);
-        selfAvatarRef.current = selfAvatar;
+        selfAvatarRef.current = createAvatar(res.self, true);
 
         for (const p of res.players) {
           if (p.id !== res.self.id) {
-            const other = new PlayerAvatar(p, false);
-            sceneRef.current.add(other.group);
-            otherAvatarsRef.current.set(p.id, other);
+            otherAvatarsRef.current.set(p.id, createAvatar(p, false));
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
@@ -723,6 +807,8 @@ export default function App() {
         max: res.room.max
       });
 
+      // Camera bắt đầu ngay sau lưng nhân vật, nhìn về chính điện
+      cameraAngle.current = { theta: 0, phi: 0.28, dist: 5.4 };
       setHasEntered(true);
       updateOnlinePlayers();
       sound.startZenMusic();
@@ -737,59 +823,98 @@ export default function App() {
     }
   };
 
+  // Bồ đoàn trống gần nhất (không có ai đang đứng/quỳ trên đó)
+  const findFreeCushion = () => {
+    const self = selfAvatarRef.current;
+    const spots = worldRef.current?.cushionSpots || [];
+    if (!self || !spots.length) return null;
+    const others = [...otherAvatarsRef.current.values()].map(a => a.group.position);
+    const free = spots.filter(sp => others.every(o => Math.hypot(o.x - sp.x, o.z - sp.z) > 0.6));
+    const list = free.length ? free : spots;
+    return list.reduce((best, sp) =>
+      Math.hypot(sp.x - self.group.position.x, sp.z - self.group.position.z) <
+      Math.hypot(best.x - self.group.position.x, best.z - self.group.position.z) ? sp : best
+    );
+  };
+
   const handleTriggerAction = (type: ActionType) => {
     sound.playClick();
-
-    const locations: Record<string, { x: number; z: number; ry: number }> = {
-      incense: { x: 0, z: 2.2, ry: 0 },
-      bow:     { x: -4.8, z: 7.2, ry: 0 },
-      flower:  { x: 0, z: -12.5, ry: 0 },
-      bell:    { x: 15.2, z: 8.5, ry: -Math.PI / 2 },
-      drum:    { x: 15.2, z: 6.5, ry: -Math.PI / 2 },
-      lantern: { x: -16.0, z: 24.0, ry: Math.PI / 2 }
-    };
+    const self = selfAvatarRef.current;
+    if (!self) return;
 
     if (type === 'lantern') {
       setLanternModalState({ open: true, mode: 'release' });
       return;
     }
 
-    if (locations[type]) {
-      const loc = locations[type];
-      autoWalkTarget.current = {
-        x: loc.x,
-        z: loc.z,
-        ry: loc.ry,
-        anim: type,
-        startTime: Date.now()
-      };
-      setIsNavigating(true);
-      if (destinationMarkerRef.current) {
-        destinationMarkerRef.current.position.set(loc.x, 0.05, loc.z);
+    let spot: { x: number; z: number; ry: number } | null = null;
+    switch (type) {
+      case 'incense':
+        // Đứng trước lư hương lớn, hướng về chính điện
+        spot = { x: 0, z: 2.2, ry: Math.PI };
+        break;
+      case 'bow': {
+        const c = findFreeCushion();
+        if (c) spot = { x: c.x, z: c.z, ry: faceTo(c.x, c.z, HALL_FOCUS.x, HALL_FOCUS.z) };
+        break;
       }
-      return;
+      case 'flower':
+        // Trước bàn thờ, hướng về tượng Phật
+        spot = { x: 0, z: -11.9, ry: Math.PI };
+        break;
+      case 'bell':
+        // Đứng trong lầu chuông, nắm dây thừng buộc vào chày gỗ
+        spot = { x: 20.55, z: 8, ry: -Math.PI / 2 };
+        break;
+      case 'drum':
+        // Đứng trước mặt trống
+        spot = { x: 18, z: 9.75, ry: Math.PI };
+        break;
     }
 
+    if (spot) {
+      startAutoWalk(spot.x, spot.z, spot.ry, type);
+      return;
+    }
     triggerActionDirect(type);
   };
 
+  // Thả đèn: đi tới bờ hồ sen gần nhất rồi quỳ thả đèn
+  const startLanternRelease = (wish: string) => {
+    const self = selfAvatarRef.current;
+    if (!self) return;
+    const angle = Math.atan2(self.group.position.z - POND_CENTER.z, self.group.position.x - POND_CENTER.x);
+    const x = POND_CENTER.x + Math.cos(angle) * POND_EDGE_RADIUS;
+    const z = POND_CENTER.z + Math.sin(angle) * POND_EDGE_RADIUS;
+    startAutoWalk(x, z, faceTo(x, z, POND_CENTER.x, POND_CENTER.z), 'lantern', wish);
+  };
+
   const triggerActionDirect = async (type: ActionType, text?: string) => {
-    if (['namaste', 'meditate', 'wooden_fish'].includes(type) && currentAnim === type) {
-      if (selfAvatarRef.current) selfAvatarRef.current.currentAnim = 'idle';
+    const avatar = selfAvatarRef.current;
+    if (!avatar) return;
+
+    // Bấm lại hành động bật/tắt đang chạy -> dừng
+    if (TOGGLE_ACTIONS.includes(type) && avatar.currentAnim === type) {
+      avatar.currentAnim = 'idle';
       setCurrentAnim('idle');
-      network.sendAction('idle');
       return;
     }
 
-    if (selfAvatarRef.current) selfAvatarRef.current.currentAnim = type;
+    if (avatar.currentAnim === type) avatar.restartAnim();
+    avatar.currentAnim = type;
     setCurrentAnim(type);
 
-    if (type === 'wooden_fish') sound.playWoodenFish(1.0);
-    else if (type === 'bow') sound.playChime();
-
     const res = await network.sendAction(type, text);
-    if (res?.error) showToast(res.error);
-    else if (res?.meritGain) addMeritEffect(res.meritGain);
+    if (res?.error) {
+      showToast(res.error);
+      // Bị từ chối (ví dụ chuông vừa được thỉnh) thì dừng động tác
+      if (ACTION_DURATION[type] !== undefined && avatar.currentAnim === type) {
+        avatar.currentAnim = 'idle';
+        setCurrentAnim('idle');
+      }
+    } else if (res?.meritGain) {
+      addMeritEffect(res.meritGain);
+    }
   };
 
   const handleSwitchRoom = async (targetRoomId: string) => {
@@ -804,9 +929,7 @@ export default function App() {
 
         for (const p of res.players) {
           if (p.id !== network.selfData?.id) {
-            const other = new PlayerAvatar(p, false);
-            sceneRef.current.add(other.group);
-            otherAvatarsRef.current.set(p.id, other);
+            otherAvatarsRef.current.set(p.id, createAvatar(p, false));
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
@@ -1007,10 +1130,7 @@ export default function App() {
           mode={lanternModalState.mode}
           viewingLantern={lanternModalState.viewingItem}
           onClose={() => setLanternModalState({ open: false, mode: 'release' })}
-          onRelease={(wish) => {
-            handleTriggerAction('lantern');
-            triggerActionDirect('lantern', wish);
-          }}
+          onRelease={(wish) => startLanternRelease(wish)}
         />
       )}
 
