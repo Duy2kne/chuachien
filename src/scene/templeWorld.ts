@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   getCourtyardStoneTexture,
   getMainPathTexture,
@@ -244,6 +245,18 @@ export class TempleWorld {
   private incenseMeshMap = new Map<string, THREE.Group>();
   private flowerMeshMap = new Map<string, THREE.Group>();
   private lanternMeshMap = new Map<string, THREE.Group>();
+
+  // Vật liệu & hình khối dùng chung cho nhang/hoa/đèn hoa đăng (tránh tạo mới mỗi lần thao tác -> đỡ lag khi nhiều action)
+  private readonly offeringMat = {
+    incenseWood: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }),
+    incenseTip: new THREE.MeshBasicMaterial({ color: 0xff5a1f }),
+    incenseGlow: new THREE.SpriteMaterial({ map: getSmokeSpriteTexture(), color: 0xff7a2a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+    lotus: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4 }),
+    lanternPetal: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, emissive: 0xf7a8d4, emissiveIntensity: 0.3 }),
+    lanternBase: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }),
+    lanternFlame: new THREE.MeshBasicMaterial({ color: 0xffc14d }),
+    lanternGlow: new THREE.SpriteMaterial({ map: getSmokeSpriteTexture(), color: 0xffa94d, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.9 })
+  };
 
   // Chiếu sáng & Bầu trời
   public sunLight: THREE.DirectionalLight | null = null;
@@ -3081,6 +3094,7 @@ export class TempleWorld {
     for (const [id, mesh] of this.incenseMeshMap.entries()) {
       if (!currentIncenseIds.has(id)) {
         this.scene.remove(mesh);
+        this.disposeOfferingMesh(mesh);
         this.incenseMeshMap.delete(id);
       }
     }
@@ -3096,6 +3110,7 @@ export class TempleWorld {
     for (const [id, mesh] of this.flowerMeshMap.entries()) {
       if (!currentFlowerIds.has(id)) {
         this.scene.remove(mesh);
+        this.disposeOfferingMesh(mesh);
         this.flowerMeshMap.delete(id);
       }
     }
@@ -3111,6 +3126,7 @@ export class TempleWorld {
     for (const [id, mesh] of this.lanternMeshMap.entries()) {
       if (!currentLanternIds.has(id)) {
         this.lanternLayer.remove(mesh);
+        this.disposeOfferingMesh(mesh);
         this.lanternMeshMap.delete(id);
       }
     }
@@ -3123,40 +3139,86 @@ export class TempleWorld {
     }
   }
 
+  // Giải phóng geometry đã gộp (material dùng chung nên không dispose ở đây) để tránh rò rỉ bộ nhớ GPU
+  // khi nhang/hoa/đèn hết hạn và liên tục bị tạo-xoá trong phiên chơi dài.
+  private disposeOfferingMesh(root: THREE.Object3D) {
+    root.traverse(obj => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) mesh.geometry.dispose();
+    });
+  }
+
+  // Ghép ma trận "vị trí cục bộ sau khi xoay theo nhóm cha" giống hệt cách Object3D cha-con cũ tính ra,
+  // để gộp hình học mà không làm lệch vị trí so với bản gốc.
+  private static partMatrix(parentX: number, parentZ: number, parentTiltZ: number, localX: number, localY: number, localZ: number): THREE.Matrix4 {
+    return new THREE.Matrix4()
+      .makeTranslation(parentX, 0, parentZ)
+      .multiply(new THREE.Matrix4().makeRotationZ(parentTiltZ))
+      .multiply(new THREE.Matrix4().makeTranslation(localX, localY, localZ));
+  }
+
+  // Ma trận vị trí + xoay (Euler) + tỉ lệ cho một khối lá/cánh hoa gắn thẳng vào group gốc (không qua cha trung gian)
+  private static leafMatrix(px: number, py: number, pz: number, euler: THREE.Euler, scale?: THREE.Vector3): THREE.Matrix4 {
+    const q = new THREE.Quaternion().setFromEuler(euler);
+    return new THREE.Matrix4().compose(new THREE.Vector3(px, py, pz), q, scale ?? new THREE.Vector3(1, 1, 1));
+  }
+
+  // Gộp nhiều khối hình lại thành 1 BufferGeometry duy nhất (kèm màu từng phần) để giảm số draw call
+  // khi có nhiều nhang/hoa/đèn hoa đăng cùng lúc trên bàn thờ/mặt hồ.
+  private mergeColoredParts(parts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix?: THREE.Matrix4 }[]): THREE.BufferGeometry {
+    const tmpColor = new THREE.Color();
+    const pieces: THREE.BufferGeometry[] = [];
+    for (const part of parts) {
+      const g = part.geo;
+      if (part.matrix) g.applyMatrix4(part.matrix);
+      tmpColor.set(part.color);
+      const count = g.attributes.position.count;
+      const colors = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        colors[i * 3] = tmpColor.r;
+        colors[i * 3 + 1] = tmpColor.g;
+        colors[i * 3 + 2] = tmpColor.b;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      pieces.push(g);
+    }
+    const merged = mergeGeometries(pieces, false);
+    for (const g of pieces) g.dispose();
+    return merged;
+  }
+
   private createIncenseStickMesh(x: number, y: number, z: number): THREE.Group {
     const group = new THREE.Group();
-    const stickMat = new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.9 });
-    const handleMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.7 });
-    const tipMat = new THREE.MeshBasicMaterial({ color: 0xff5a1f });
-    const glowMat = new THREE.SpriteMaterial({
-      map: getSmokeSpriteTexture(),
-      color: 0xff7a2a,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending
-    });
+    const woodParts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix: THREE.Matrix4 }[] = [];
+    const tipGeos: THREE.BufferGeometry[] = [];
 
     // Bó 3 nén hương hơi xòe ra
     for (let i = 0; i < 3; i++) {
-      const stick = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.62, 5), stickMat);
-      body.position.y = 0.31;
-      stick.add(body);
-      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.2, 5), handleMat);
-      handle.position.y = -0.05;
-      stick.add(handle);
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 6), tipMat);
-      tip.position.y = 0.63;
-      stick.add(tip);
-      const glow = new THREE.Sprite(glowMat);
-      glow.scale.set(0.12, 0.12, 1);
-      glow.position.y = 0.63;
-      stick.add(glow);
+      const offsetX = (i - 1) * 0.03;
+      const tilt = (i - 1) * 0.12;
 
-      stick.position.x = (i - 1) * 0.03;
-      stick.rotation.z = (i - 1) * 0.12;
-      group.add(stick);
+      const body = new THREE.CylinderGeometry(0.014, 0.014, 0.62, 5);
+      woodParts.push({ geo: body, color: 0x9a3412, matrix: TempleWorld.partMatrix(offsetX, 0, tilt, 0, 0.31, 0) });
+
+      const handle = new THREE.CylinderGeometry(0.012, 0.012, 0.2, 5);
+      woodParts.push({ geo: handle, color: 0xb91c1c, matrix: TempleWorld.partMatrix(offsetX, 0, tilt, 0, -0.05, 0) });
+
+      const tip = new THREE.SphereGeometry(0.02, 6, 6);
+      tip.applyMatrix4(TempleWorld.partMatrix(offsetX, 0, tilt, 0, 0.63, 0));
+      tipGeos.push(tip);
     }
+
+    const woodMesh = new THREE.Mesh(this.mergeColoredParts(woodParts), this.offeringMat.incenseWood);
+    group.add(woodMesh);
+    const tipMesh = new THREE.Mesh(mergeGeometries(tipGeos, false), this.offeringMat.incenseTip);
+    for (const g of tipGeos) g.dispose();
+    group.add(tipMesh);
+
+    const glow = new THREE.Sprite(this.offeringMat.incenseGlow);
+    glow.scale.set(0.12, 0.12, 1);
+    glow.position.y = 0.63;
+    group.add(glow);
+
     group.rotation.y = Math.random() * Math.PI;
     group.position.set(x, y, z);
     return group;
@@ -3164,20 +3226,21 @@ export class TempleWorld {
 
   private createAltarLotusMesh(x: number, y: number, z: number): THREE.Group {
     const group = new THREE.Group();
-    const petalMat = new THREE.MeshStandardMaterial({ color: 0xf472b6, roughness: 0.4 });
-    const centerMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.3 });
+    const parts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix: THREE.Matrix4 }[] = [];
 
-    const center = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.06, 8), centerMat);
-    group.add(center);
+    const center = new THREE.CylinderGeometry(0.08, 0.08, 0.06, 8);
+    parts.push({ geo: center, color: 0xfacc15, matrix: new THREE.Matrix4() });
 
     for (let p = 0; p < 8; p++) {
-      const petal = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.22, 5), petalMat);
+      const petal = new THREE.ConeGeometry(0.08, 0.22, 5);
       const pa = (p * Math.PI * 2) / 8;
-      petal.position.set(Math.cos(pa) * 0.12, 0.08, Math.sin(pa) * 0.12);
-      petal.rotation.z = Math.cos(pa) * 0.4;
-      petal.rotation.x = Math.sin(pa) * -0.4;
-      group.add(petal);
+      const e = new THREE.Euler(Math.sin(pa) * -0.4, 0, Math.cos(pa) * 0.4);
+      const mx = TempleWorld.leafMatrix(Math.cos(pa) * 0.12, 0.08, Math.sin(pa) * 0.12, e);
+      parts.push({ geo: petal, color: 0xf472b6, matrix: mx });
     }
+
+    const mesh = new THREE.Mesh(this.mergeColoredParts(parts), this.offeringMat.lotus);
+    group.add(mesh);
     group.position.set(x, y, z);
     return group;
   }
@@ -3186,44 +3249,34 @@ export class TempleWorld {
     const group = new THREE.Group();
     group.userData = { lanternData: item };
 
-    const petalOuter = new THREE.MeshStandardMaterial({ color: 0xf9a8d4, roughness: 0.55, emissive: 0xf472b6, emissiveIntensity: 0.25 });
-    const petalInner = new THREE.MeshStandardMaterial({ color: 0xfce7f3, roughness: 0.5, emissive: 0xfbcfe8, emissiveIntensity: 0.35 });
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.26, 0.2, 0.08, 12),
-      new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.8 })
-    );
-    group.add(base);
+    // Đế + cây nến gộp chung 1 khối (không phát sáng)
+    const baseParts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix: THREE.Matrix4 }[] = [
+      { geo: new THREE.CylinderGeometry(0.26, 0.2, 0.08, 12), color: 0x4d7c0f, matrix: new THREE.Matrix4() },
+      { geo: new THREE.CylinderGeometry(0.035, 0.035, 0.14, 8), color: 0xfff7ed, matrix: new THREE.Matrix4().makeTranslation(0, 0.16, 0) }
+    ];
+    const baseMesh = new THREE.Mesh(this.mergeColoredParts(baseParts), this.offeringMat.lanternBase);
+    group.add(baseMesh);
 
-    // 2 tầng cánh sen
-    for (const [count, radius, tilt, mat, h] of [[8, 0.2, 0.55, petalOuter, 0.1], [6, 0.11, 0.3, petalInner, 0.14]] as const) {
+    // 2 tầng cánh sen phát sáng ấm gộp chung 1 khối
+    const petalParts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix: THREE.Matrix4 }[] = [];
+    const petalScale = new THREE.Vector3(0.7, 1.4, 0.35);
+    for (const [count, radius, tilt, color, h] of [[8, 0.2, 0.55, 0xf9a8d4, 0.1], [6, 0.11, 0.3, 0xfce7f3, 0.14]] as const) {
       for (let i = 0; i < count; i++) {
-        const petal = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), mat);
-        petal.scale.set(0.7, 1.4, 0.35);
+        const petal = new THREE.SphereGeometry(0.1, 8, 6);
         const a = (i / count) * Math.PI * 2;
-        petal.position.set(Math.cos(a) * radius, h, Math.sin(a) * radius);
-        petal.rotation.y = -a + Math.PI / 2;
-        petal.rotation.x = tilt;
-        petal.rotation.order = 'YXZ';
-        group.add(petal);
+        const e = new THREE.Euler(tilt, -a + Math.PI / 2, 0, 'YXZ');
+        const mx = TempleWorld.leafMatrix(Math.cos(a) * radius, h, Math.sin(a) * radius, e, petalScale);
+        petalParts.push({ geo: petal, color, matrix: mx });
       }
     }
+    const petalMesh = new THREE.Mesh(this.mergeColoredParts(petalParts), this.offeringMat.lanternPetal);
+    group.add(petalMesh);
 
-    const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.14, 8), new THREE.MeshStandardMaterial({ color: 0xfff7ed }));
-    candle.position.y = 0.16;
-    group.add(candle);
-
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8), new THREE.MeshBasicMaterial({ color: 0xffc14d }));
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8), this.offeringMat.lanternFlame);
     flame.position.y = 0.28;
     group.add(flame);
 
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: getSmokeSpriteTexture(),
-      color: 0xffa94d,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      opacity: 0.9
-    }));
+    const glow = new THREE.Sprite(this.offeringMat.lanternGlow);
     glow.scale.set(0.9, 0.9, 1);
     glow.position.y = 0.3;
     group.add(glow);
