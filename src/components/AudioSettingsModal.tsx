@@ -11,7 +11,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
   const [sfxVol, setSfxVol] = useState(sound.sfxVolume);
   const [isMuted, setIsMuted] = useState(sound.isMuted);
   const [tracks, setTracks] = useState<{ id: string; name: string }[]>([]);
-  const [selectedTrack, setSelectedTrack] = useState('synth_zen');
+  const [selectedTrack, setSelectedTrack] = useState(sound.currentTrack);
 
   useEffect(() => {
     fetch('/api/music')
@@ -123,7 +123,10 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setSelectedTrack(t.id)}
+                onClick={() => {
+                  setSelectedTrack(t.id);
+                  sound.playTrack(t.id);
+                }}
                 className={`w-full text-left p-2 rounded-lg text-xs transition cursor-pointer ${
                   selectedTrack === t.id
                     ? 'bg-amber-600/25 border border-amber-500/50 text-amber-200 font-medium'
@@ -135,6 +138,12 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
             ))}
           </div>
         </div>
+
+        <p className="text-[11px] leading-relaxed text-stone-400">
+          Thêm bài: bỏ file <b className="text-stone-300">.mp3</b> vào thư mục <code className="text-amber-300">public/music</code> rồi deploy lại.
+          Đổi tiếng trống/chuông/mõ: bỏ file <code className="text-amber-300">drum.mp3</code>, <code className="text-amber-300">bell.mp3</code>,{' '}
+          <code className="text-amber-300">woodfish.mp3</code> vào <code className="text-amber-300">public/sfx</code>.
+        </p>
 
         <button
           type="button"
