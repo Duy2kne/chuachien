@@ -15,9 +15,12 @@ export type ActionType =
   | 'drum'         // Đánh trống
   | 'lantern'      // Thả đèn hoa đăng
   | 'sweep'        // Quét lá đa
-  | 'pickup'       // Phụ bếp: bê mâm cơm ở bếp
-  | 'carry'        // Đang bưng mâm cơm
-  | 'serve'        // Đặt mâm cơm lên bàn trai đường
+  | 'kitchen'      // Phụ bếp: đi vào bếp trai đường (chỉ ở giao diện, không gửi server)
+  | 'take_plate'   // Lấy đĩa từ chồng đĩa đặt lên quầy
+  | 'take_bun'     // Gắp 1 bánh bao từ xửng đặt lên đĩa
+  | 'lift_plate'   // Bê đĩa bánh bao (đủ 3 cái) lên tay
+  | 'carry'        // Đang bưng đĩa bánh bao
+  | 'serve'        // Đặt đĩa bánh bao xuống bàn trai đường
   | 'wave';        // Vẫy chào
 
 export interface PlayerData {
