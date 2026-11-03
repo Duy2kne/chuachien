@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import type { TrayItem } from '../shared/dining.js';
 import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardData, MeritProfile, CommunalState } from '../types.js';
 
 export interface JoinResponse {
@@ -9,6 +10,7 @@ export interface JoinResponse {
   flowers: FlowerItem[];
   lanterns: LanternItem[];
   leaves: LeafPile[];
+  trays: TrayItem[];
   uid: string;
   leaderboard: LeaderboardData;
   profile: MeritProfile;
@@ -33,6 +35,7 @@ export class NetworkClient {
   public onProfile?: (profile: MeritProfile) => void;
   public onCommunal?: (state: CommunalState) => void;
   public onLeafAdded?: (leaf: LeafPile) => void;
+  public onTrays?: (trays: TrayItem[]) => void;
   public onLeafRemoved?: (data: { id: string; by: string }) => void;
   public onPlayerUpdated?: (data: { id: string; name: string; robe: RobeColor; style: AvatarStyle; items?: string[] }) => void;
   public onBellRung?: (data: { playerName: string; time: number }) => void;
@@ -102,6 +105,7 @@ export class NetworkClient {
     this.socket.on('profile:self', (profile: MeritProfile) => this.onProfile?.(profile));
     this.socket.on('communal', (state: CommunalState) => this.onCommunal?.(state));
     this.socket.on('leaves:add', (leaf: LeafPile) => this.onLeafAdded?.(leaf));
+    this.socket.on('trays', (trays: TrayItem[]) => this.onTrays?.(trays));
     this.socket.on('leaves:remove', (data) => this.onLeafRemoved?.(data));
 
     this.socket.on('player:update', (data) => {
