@@ -67,7 +67,7 @@ export interface CommunalProject {
 }
 
 export const COMMUNAL_PROJECTS: CommunalProject[] = [
-  { id: 'bao_thap', name: 'Bảo tháp 5 tầng', icon: '🛕', goal: 2000, description: 'Ngọn bảo tháp mái cong bên phải sân chùa' },
+  { id: 'bao_thap', name: 'Bảo tháp 5 tầng', icon: '🛕', goal: 2000, description: 'Ngọn bảo tháp mái cong ở góc sau bên trái chùa' },
   { id: 'quan_am', name: 'Tượng Quan Âm lộ thiên', icon: '🪷', goal: 5000, description: 'Tượng Quan Âm bạch ngọc cao lớn trên đài sen' },
   { id: 'ho_sen_2', name: 'Hồ sen thứ hai', icon: '🌸', goal: 10000, description: 'Hồ sen nhỏ có cá koi phía sau lầu chuông' }
 ];
