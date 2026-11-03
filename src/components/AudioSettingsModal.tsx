@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { sound } from '../audio/soundEngine.js';
 import { X, Volume2, VolumeX, Music, Bell } from 'lucide-react';
+import { LOCKED_TRACKS, getShopItem } from '../shared/merit.js';
 
 interface AudioSettingsModalProps {
+  owned: string[];           // vật phẩm đã đổi (để mở khoá bài nhạc)
+  onOpenShop: () => void;
   onClose: () => void;
 }
 
-export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose }) => {
+export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ owned, onOpenShop, onClose }) => {
   const [musicVol, setMusicVol] = useState(sound.musicVolume);
   const [sfxVol, setSfxVol] = useState(sound.sfxVolume);
   const [isMuted, setIsMuted] = useState(sound.isMuted);
@@ -17,7 +20,10 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
     fetch('/api/music')
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) setTracks(data);
+        if (!Array.isArray(data)) return;
+        // Chèn các bài nhạc tổng hợp có thể mở khoá ngay sau bài mặc định
+        const extra = Object.entries(LOCKED_TRACKS).map(([id, t]) => ({ id, name: t.name }));
+        setTracks([data[0], ...extra, ...data.slice(1)].filter(Boolean));
       })
       .catch(() => {});
   }, []);
@@ -119,11 +125,15 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
         <div className="space-y-1">
           <label className="text-xs font-medium text-stone-300">Giai điệu thiền:</label>
           <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-            {tracks.map((t) => (
+            {tracks.map((t) => {
+              const lock = LOCKED_TRACKS[t.id];
+              const locked = !!lock && !owned.includes(lock.item);
+              return (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => {
+                  if (locked) return onOpenShop();
                   setSelectedTrack(t.id);
                   sound.playTrack(t.id);
                 }}
@@ -134,8 +144,12 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({ onClose 
                 }`}
               >
                 {t.name}
+                {locked && (
+                  <span className="float-right text-stone-500">🔒 {getShopItem(lock.item)?.cost} công đức</span>
+                )}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
