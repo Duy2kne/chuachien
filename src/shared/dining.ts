@@ -7,8 +7,14 @@ export const DINING = {
   minZ: 19,
   maxZ: 28,
   doorZ: [22.5, 24.5] as [number, number],    // khoảng cửa trên tường phía tây (x = 14)
-  // Chỗ đứng ở quầy bếp để bê mâm (quay mặt vào bếp, hướng +x)
+  // Chỗ đứng ở quầy bếp (quay mặt vào bếp, hướng +x)
   kitchenSpot: { x: 23.2, z: 23.5, ry: Math.PI / 2 },
+  // Trên quầy: chồng đĩa (bên trái người đứng), chỗ bày đĩa (chính giữa), xửng bánh bao (bên phải)
+  plateStack: { x: 24.6, z: 22.55 },
+  workPlate: { x: 24.45, z: 23.5 },
+  steamer: { x: 24.75, z: 24.55 },
+  stove: { x: 25, z: 21.0 },
+  counterTop: 1.01,
   counter: { minX: 24.2, maxX: 25.8, minZ: 20, maxZ: 27 },
   // 2 bàn ăn dài
   tables: [
@@ -37,5 +43,10 @@ export interface TrayItem {
   createdAt: number;
 }
 
-// Mâm cơm để trên bàn 5 phút rồi được "thọ trai" xong, dọn đi
+// Phụ bếp: lấy đĩa -> lấy đủ 3 bánh bao -> bê đĩa -> đặt xuống bàn
+export const BUNS_PER_PLATE = 3;
+export const KITCHEN_REACH = 1.8;   // đứng cách chỗ đứng ở quầy tối đa 1.8m mới thao tác được
+export const SERVE_REACH = 1.8;     // đứng cách chỗ đặt đĩa trên bàn tối đa 1.8m
+
+// Đĩa bánh bao để trên bàn 5 phút rồi được "thọ trai" xong, dọn đi
 export const TRAY_TTL_MS = 5 * 60 * 1000;
