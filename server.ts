@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import compression from 'compression';
 import helmet from 'helmet';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -406,6 +407,29 @@ app.get('/api/leaderboard', (_req, res) => {
 
 app.get('/api/stats', (_req, res) => {
   res.json(stats);
+});
+
+// Cộng công đức thủ công cho 1 uid (chỉ chủ chùa dùng, cần header x-admin-key trùng biến môi trường ADMIN_KEY)
+app.post('/api/admin/merit', (req, res) => {
+  const adminKey = process.env.ADMIN_KEY;
+  if (!adminKey) return res.status(503).json({ error: 'Server chưa cấu hình ADMIN_KEY' });
+
+  const provided = Buffer.from(String(req.get('x-admin-key') || ''));
+  const expected = Buffer.from(adminKey);
+  const authorized = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+  if (!authorized) return res.status(401).json({ error: 'Sai admin key' });
+
+  const uid = String(req.body?.uid || '').trim();
+  const amount = Number(req.body?.amount);
+  if (!uid) return res.status(400).json({ error: 'Thiếu uid' });
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
+    return res.status(400).json({ error: 'amount phải là số dương hợp lệ' });
+  }
+
+  const current = meritStore.get(uid);
+  touchRecord(uid, { merit: (current?.merit || 0) + amount });
+  saveMerit();
+  res.json({ ok: true, uid, merit: meritStore.get(uid)?.merit });
 });
 
 // Âm thanh tuỳ chọn thay cho âm thanh tổng hợp (drum / bell / woodfish / chime)
