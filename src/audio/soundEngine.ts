@@ -460,8 +460,12 @@ class SoundEngine {
     this.currentTrack = id;
     try { localStorage.setItem('chua_music_track', id); } catch {}
 
-    if (id === 'synth_zen') {
+    // Nhạc tổng hợp: zen (mặc định), chuông xoay, đàn tranh
+    if (id.startsWith('synth_')) {
       this.audioEl?.pause();
+      const mode = id === 'synth_bowl' ? 'bowl' : id === 'synth_zither' ? 'zither' : 'zen';
+      if (this.isMusicPlaying && this.synthMode !== mode) this.stopMusic();
+      this.synthMode = mode;
       this.startZenMusic();
       return;
     }
@@ -526,8 +530,36 @@ class SoundEngine {
     }
   }
 
+  private synthMode: 'zen' | 'bowl' | 'zither' = 'zen';
+
   private scheduleNextMelodyNote = () => {
     if (!this.isMusicPlaying || !this.ctx || !this.musicGain) return;
+
+    if (this.synthMode === 'bowl') {
+      // Chuông xoay: mỗi 5-9 giây một tiếng chuông ngân dài, xen tiếng sáo rất thưa
+      this.musicTimer = window.setTimeout(() => {
+        this.playSingingBowl();
+        if (Math.random() > 0.75) window.setTimeout(() => this.playFluteNote(), 1800);
+        this.scheduleNextMelodyNote();
+      }, 5000 + Math.random() * 4000);
+      return;
+    }
+
+    if (this.synthMode === 'zither') {
+      // Đàn tranh: chuỗi 3-6 nốt gảy liền nhau đi lên/xuống theo ngũ cung, rồi nghỉ
+      this.musicTimer = window.setTimeout(() => {
+        const n = 3 + Math.floor(Math.random() * 4);
+        let idx = Math.floor(Math.random() * (this.PENTATONIC_FREQS.length - 3));
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        for (let i = 0; i < n; i++) {
+          const noteIdx = Math.max(0, Math.min(this.PENTATONIC_FREQS.length - 1, idx));
+          window.setTimeout(() => this.playZitherNote(this.PENTATONIC_FREQS[noteIdx]), i * (220 + Math.random() * 120));
+          idx += dir * (Math.random() > 0.7 ? 2 : 1);
+        }
+        this.scheduleNextMelodyNote();
+      }, 2200 + Math.random() * 2600);
+      return;
+    }
 
     // Khoảng cách giữa các nốt sáo: 2.5 ~ 6 giây tạo khoảng lặng sâu lắng
     const delay = 2500 + Math.random() * 3500;
@@ -583,12 +615,44 @@ class SoundEngine {
     osc.stop(t + duration + 0.2);
   }
 
+  // Chuông xoay (singing bowl): các bồi âm không điều hoà, lệch nhẹ tạo tiếng "ngân" chậm
+  private playSingingBowl() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    const base = [196, 220, 261.63, 293.66][Math.floor(Math.random() * 4)];
+    const out = this.ctx.createGain();
+    out.gain.value = 0.9;
+    out.connect(this.musicGain);
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.5;
+      out.connect(rev);
+      rev.connect(this.convolver);
+    }
+    for (const [ratio, amp, decay] of [[1, 0.06, 9], [2.71, 0.03, 6], [5.15, 0.012, 3.5]]) {
+      for (const detune of [-3, 3]) {
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = base * ratio;
+        osc.detune.value = detune;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(amp, t + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+        osc.connect(g);
+        g.connect(out);
+        osc.start(t);
+        osc.stop(t + decay + 0.1);
+      }
+    }
+  }
+
   // Nốt đàn tranh thánh thót
-  private playZitherNote() {
+  private playZitherNote(noteFreq?: number) {
     if (!this.ctx || !this.musicGain) return;
     const t = this.ctx.currentTime;
 
-    const freq = this.PENTATONIC_FREQS[Math.floor(Math.random() * this.PENTATONIC_FREQS.length)] * 2;
+    const freq = (noteFreq ?? this.PENTATONIC_FREQS[Math.floor(Math.random() * this.PENTATONIC_FREQS.length)]) * 2;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
