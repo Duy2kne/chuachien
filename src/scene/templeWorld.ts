@@ -240,6 +240,10 @@ export class TempleWorld {
   private particleSpeed = 1;
   private readonly maxParticles = 450;
 
+  // Bia công đức và các công trình cúng dường chung đã xây
+  private steleMat: THREE.MeshStandardMaterial | null = null;
+  private builtProjects = new Map<string, { group: THREE.Group; grow: number }>();
+
   // Đống lá đa rụng trên sân (đồng bộ từ server)
   public leafLayer = new THREE.Group();
   private leafPiles = new Map<string, { data: LeafPile; group: THREE.Group; falling: number; sweptAt: number }>();
@@ -272,6 +276,7 @@ export class TempleWorld {
     this.buildBodhiTree();
     this.buildPerimeterWalls();
     this.buildDecorationsAndBonsai();
+    this.buildMeritStele();
     this.setupSmokeAndPetals();
     this.enableShadows();
   }
@@ -1847,6 +1852,16 @@ export class TempleWorld {
     islet.position.y = 0.5;
     pond.add(islet);
 
+    const quanAmGroup = this.makeQuanAmFigure();
+    pond.add(quanAmGroup);
+    this.pondGroup = pond;
+    this.scene.add(pond);
+
+    this.collisionCircles.push({ x: -18, z: 24, r: 8.4 });
+  }
+
+  // Tượng Quan Âm bạch ngọc (dùng cho hòn non bộ giữa hồ và tượng lộ thiên)
+  private makeQuanAmFigure(): THREE.Group {
     const whiteJadeMat = new THREE.MeshStandardMaterial({ color: 0xf5f2ea, roughness: 0.35, metalness: 0.05 });
     const quanAmGroup = new THREE.Group();
     quanAmGroup.position.y = 1.1;
@@ -1934,11 +1949,7 @@ export class TempleWorld {
     // Tượng nhìn ra phía lối đi chính
     quanAmGroup.rotation.y = Math.PI / 2;
 
-    pond.add(quanAmGroup);
-    this.pondGroup = pond;
-    this.scene.add(pond);
-
-    this.collisionCircles.push({ x: -18, z: 24, r: 8.4 });
+    return quanAmGroup;
   }
 
   // ===================== 11. CÂY BỒ ĐỀ LỚN & VÒNG GHẾ ĐÁ (GÓC TRÁI NHƯ TRONG ẢNH MẪU) =====================
@@ -2327,6 +2338,256 @@ export class TempleWorld {
     this.setDayNight(this.isNight);
   }
 
+  // ===================== BIA CÔNG ĐỨC (rùa đội bia) =====================
+  private buildMeritStele() {
+    const x = -12.5;
+    const z = 33;
+    const group = new THREE.Group();
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x77736b, roughness: 0.9 });
+
+    // Rùa đá đội bia
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.9, 18, 12), stoneMat);
+    shell.scale.set(0.95, 0.42, 1.3);
+    shell.position.y = 0.3;
+    group.add(shell);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), stoneMat);
+    head.scale.set(0.9, 0.8, 1.2);
+    head.position.set(0, 0.42, 1.25);
+    group.add(head);
+    for (const [fx, fz] of [[-0.7, 0.75], [0.7, 0.75], [-0.7, -0.75], [0.7, -0.75]]) {
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), stoneMat);
+      foot.scale.set(1, 0.5, 1.2);
+      foot.position.set(fx, 0.1, fz);
+      group.add(foot);
+    }
+
+    // Tấm bia: mặt trước khắc chữ (texture vẽ lại khi có người đứng đầu mới)
+    // Hơi tự phát sáng để đọc được chữ cả khi bia nằm trong bóng tường
+    this.steleMat = new THREE.MeshStandardMaterial({ roughness: 0.75, emissive: 0xffffff, emissiveIntensity: 0.35 });
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 2.3, 0.22),
+      [stoneMat, stoneMat, stoneMat, stoneMat, this.steleMat, stoneMat]
+    );
+    slab.position.y = 1.75;
+    group.add(slab);
+    // Chóp bia hình bán nguyệt
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.26, 24, 1, false, Math.PI / 2, Math.PI), stoneMat);
+    cap.rotation.x = Math.PI / 2;
+    cap.scale.y = 0.55;
+    cap.position.y = 2.9;
+    group.add(cap);
+
+    // Quay mặt bia về phía lối đi chính
+    group.rotation.y = Math.PI / 2;
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+    this.collisionCircles.push({ x, z, r: 1.3 });
+    this.updateStele([], null);
+  }
+
+  // Khắc tên người đứng đầu công đức các tuần lên bia
+  public updateStele(winners: { week: string; name: string; merit: number }[], leader: { name: string; merit: number } | null) {
+    if (!this.steleMat) return;
+    const c = document.createElement('canvas');
+    c.width = 384;
+    c.height = 576;
+    const g = c.getContext('2d')!;
+    const grad = g.createLinearGradient(0, 0, 0, 576);
+    grad.addColorStop(0, '#8d877c');
+    grad.addColorStop(1, '#6f6a61');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 384, 576);
+    g.strokeStyle = 'rgba(40, 30, 20, 0.55)';
+    g.lineWidth = 6;
+    g.strokeRect(16, 16, 352, 544);
+
+    g.textAlign = 'center';
+    g.fillStyle = '#3b2a12';
+    g.font = '900 38px "Noto Serif", Georgia, serif';
+    g.fillText('BIA CÔNG ĐỨC', 192, 70);
+    g.font = '500 18px "Be Vietnam Pro", sans-serif';
+    g.fillText('Ghi danh người đứng đầu mỗi tuần', 192, 100);
+    g.fillRect(70, 115, 244, 3);
+
+    const fmtWeek = (w: string) => w.split('-').reverse().slice(0, 2).join('/');
+    g.textAlign = 'left';
+    if (!winners.length) {
+      g.textAlign = 'center';
+      g.font = 'italic 20px "Noto Serif", Georgia, serif';
+      g.fillText('Chưa có ai được khắc tên', 192, 200);
+      g.fillText('Tích công đức để ghi danh 🙏', 192, 232);
+    }
+    winners.slice(0, 8).forEach((w, i) => {
+      const y = 158 + i * 46;
+      g.font = '700 22px "Noto Serif", Georgia, serif';
+      g.fillStyle = i === 0 ? '#5a3a00' : '#3b2a12';
+      const name = w.name.length > 14 ? w.name.slice(0, 13) + '…' : w.name;
+      g.fillText(`${i === 0 ? '★ ' : ''}${name}`, 36, y);
+      g.textAlign = 'right';
+      g.font = '500 16px "Be Vietnam Pro", sans-serif';
+      g.fillText(`tuần ${fmtWeek(w.week)} · ${w.merit}`, 350, y);
+      g.textAlign = 'left';
+    });
+
+    g.textAlign = 'center';
+    g.fillStyle = '#2e1f0c';
+    g.font = '600 18px "Be Vietnam Pro", sans-serif';
+    g.fillText('Tuần này dẫn đầu:', 192, 520);
+    g.font = '700 20px "Noto Serif", Georgia, serif';
+    g.fillText(leader ? `${leader.name} (${leader.merit})` : 'Đang chờ người đầu tiên', 192, 546);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.steleMat.map?.dispose();
+    this.steleMat.map = tex;
+    this.steleMat.emissiveMap = tex;
+    this.steleMat.needsUpdate = true;
+  }
+
+  // ===================== CÔNG TRÌNH CÚNG DƯỜNG CHUNG =====================
+  // animate = mọc lên từ mặt đất khi vừa xây xong
+  public setBuiltProjects(ids: string[], animate = true) {
+    for (const id of ids) {
+      if (this.builtProjects.has(id)) continue;
+      let group: THREE.Group | null = null;
+      if (id === 'bao_thap') group = this.buildPagoda(17, 26);
+      else if (id === 'quan_am') group = this.buildGrandQuanAm(-17, -11);
+      else if (id === 'ho_sen_2') group = this.buildSecondPond(18, -12);
+      if (!group) continue;
+      group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && !(m.material as THREE.Material).transparent) {
+          m.castShadow = true;
+          m.receiveShadow = true;
+        }
+      });
+      this.scene.add(group);
+      group.scale.setScalar(animate ? 0.01 : 1);
+      this.builtProjects.set(id, { group, grow: animate ? 0 : 1 });
+    }
+  }
+
+  // Bảo tháp 5 tầng mái cong
+  private buildPagoda(x: number, z: number): THREE.Group {
+    const group = new THREE.Group();
+    const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(), side: THREE.DoubleSide, roughness: 0.55 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe9dcc4, roughness: 0.85 });
+    const woodMat = new THREE.MeshStandardMaterial({ map: getLacqueredWoodTexture(), roughness: 0.65 });
+    const goldMat = new THREE.MeshStandardMaterial({ color: 0xd4a537, metalness: 0.85, roughness: 0.3 });
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8c867a, roughness: 0.9 });
+
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.9, 0.6, 8), stoneMat);
+    base.position.y = 0.3;
+    group.add(base);
+
+    let y = 0.6;
+    for (let tier = 0; tier < 5; tier++) {
+      const w = 3.0 - tier * 0.42;
+      const h = tier === 0 ? 1.7 : 1.15;
+      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), wallMat);
+      body.position.y = y + h / 2;
+      group.add(body);
+      // Cửa vòm đỏ 4 mặt
+      for (let side = 0; side < 4; side++) {
+        const door = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.3, h * 0.55), woodMat);
+        const a = (side * Math.PI) / 2;
+        door.position.set(Math.sin(a) * (w / 2 + 0.01), y + h * 0.42, Math.cos(a) * (w / 2 + 0.01));
+        door.rotation.y = a;
+        group.add(door);
+      }
+      y += h;
+      const roof = makeRoofGroup(w + 1.3, w + 1.3, 0.75, 0.55, roofMat);
+      roof.position.y = y - 0.15;
+      group.add(roof);
+      y += 0.45;
+    }
+    // Chóp tháp: hồ lô vàng
+    const finial = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.2, 12), goldMat);
+    finial.position.y = y + 0.6;
+    group.add(finial);
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.18 - i * 0.03, 0.04, 6, 16), goldMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = y + 0.2 + i * 0.25;
+      group.add(ring);
+    }
+
+    group.position.set(x, 0, z);
+    this.collisionCircles.push({ x, z, r: 2.6 });
+    return group;
+  }
+
+  // Tượng Quan Âm lộ thiên cao lớn trên đài sen
+  private buildGrandQuanAm(x: number, z: number): THREE.Group {
+    const group = new THREE.Group();
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8c867a, roughness: 0.9 });
+    const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.0, 1.2, 8), stoneMat);
+    pedestal.position.y = 0.6;
+    group.add(pedestal);
+    const pedestal2 = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.5, 0.5, 8), stoneMat);
+    pedestal2.position.y = 1.45;
+    group.add(pedestal2);
+    const figure = this.makeQuanAmFigure();
+    figure.scale.setScalar(2.4);
+    figure.position.y = 1.7;
+    figure.rotation.y = Math.PI * 0.15;
+    group.add(figure);
+    const light = new THREE.PointLight(0xfff1c1, 0.8, 10);
+    light.position.set(0, 4, 2);
+    group.add(light);
+    this.nightLights.push(light);
+    group.position.set(x, 0, z);
+    this.collisionCircles.push({ x, z, r: 2.2 });
+    return group;
+  }
+
+  // Hồ sen thứ hai: mặt nước, bờ đá, lá sen, hoa sen, cá koi
+  private buildSecondPond(x: number, z: number): THREE.Group {
+    const group = new THREE.Group();
+    const water = new THREE.Mesh(
+      new THREE.CylinderGeometry(4, 4, 0.3, 32),
+      new THREE.MeshStandardMaterial({ color: 0x1d5d6e, roughness: 0.1, metalness: 0.6, transparent: true, opacity: 0.88 })
+    );
+    water.position.y = -0.1;
+    group.add(water);
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8378, roughness: 0.95, flatShading: true });
+    for (let i = 0; i < 28; i++) {
+      const a = (i / 28) * Math.PI * 2;
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.4 + Math.random() * 0.25, 0), rockMat);
+      rock.position.set(Math.cos(a) * 4.15, 0.05, Math.sin(a) * 4.15);
+      rock.scale.set(1.3, 0.5, 1);
+      rock.rotation.y = -a;
+      group.add(rock);
+    }
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.7 });
+    const pinkMat = new THREE.MeshStandardMaterial({ color: 0xf472b6, roughness: 0.4 });
+    for (let i = 0; i < 12; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 0.8 + Math.random() * 2.8;
+      const leaf = new THREE.Mesh(new THREE.CircleGeometry(0.4 + Math.random() * 0.25, 12), leafMat);
+      leaf.rotation.x = -Math.PI / 2;
+      leaf.position.set(Math.cos(a) * r, 0.06, Math.sin(a) * r);
+      group.add(leaf);
+      if (i % 2 === 0) {
+        const bud = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), pinkMat);
+        bud.scale.set(1, 1.3, 1);
+        bud.position.set(Math.cos(a) * r + 0.1, 0.2, Math.sin(a) * r);
+        group.add(bud);
+      }
+    }
+    const koiMat = new THREE.MeshStandardMaterial({ color: 0xea580c, roughness: 0.3 });
+    for (let k = 0; k < 3; k++) {
+      const koi = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.45, 6), koiMat);
+      koi.rotation.x = Math.PI / 2;
+      const a = (k / 3) * Math.PI * 2;
+      koi.position.set(Math.cos(a) * 2, -0.02, Math.sin(a) * 2);
+      group.add(koi);
+    }
+    group.position.set(x, 0, z);
+    this.collisionCircles.push({ x, z, r: 4.6 });
+    return group;
+  }
+
   // ===================== LÁ ĐA RỤNG =====================
   private getLeafAssets() {
     if (!this.leafGeo) {
@@ -2678,6 +2939,12 @@ export class TempleWorld {
     }
 
     this.updateLeafPiles(delta);
+    for (const b of this.builtProjects.values()) {
+      if (b.grow >= 1) continue;
+      b.grow = Math.min(1, b.grow + delta / 2.5);
+      const k = 1 - Math.pow(1 - b.grow, 3);
+      b.group.scale.setScalar(Math.max(0.01, k));
+    }
 
     // 4. Hào quang Đức Phật Thích Ca nhấp nháy nhẹ trang nghiêm
     if (this.buddhaHalo) {
