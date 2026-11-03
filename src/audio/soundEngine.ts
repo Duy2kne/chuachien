@@ -55,6 +55,7 @@ class SoundEngine {
 
     // Tạo procedural impulse response cho Reverb chánh điện
     this.convolver = this.createSyntheticReverb(2.8, 2.2);
+    this.loadCustomSamples();
   }
 
   private createSyntheticReverb(seconds: number, decay: number): ConvolverNode | null {
@@ -112,6 +113,7 @@ class SoundEngine {
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
 
+    if (this.playSample('bell', Math.max(0.1, Math.min(1, 1 / (distanceFactor || 1))))) return;
     const t = this.ctx.currentTime;
     const fundamental = 138.59; // Nốt C#3 trầm hùng tráng
 
@@ -181,8 +183,9 @@ class SoundEngine {
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
 
-    const t = this.ctx.currentTime;
     const vol = Math.max(0.05, Math.min(1, 1 / (distanceFactor || 1)));
+    if (this.playSample('woodfish', vol)) return;
+    const t = this.ctx.currentTime;
 
     // Thân gỗ rỗng cộng hưởng bandpass
     const filter = this.ctx.createBiquadFilter();
@@ -220,36 +223,146 @@ class SoundEngine {
   }
 
   // ===================== TIẾNG TRỐNG BÁT NHÃ =====================
-  public playDrum(distanceFactor = 1.0) {
+  // Trống da trâu thân gỗ lớn: tiếng "thùng" trầm ấm (2-3 mode cộng hưởng tụt cao độ),
+  // tiếng da căng khi dùi chạm, ngân vang trong lầu. Có thể thay bằng file public/sfx/drum.mp3
+  public playDrum(distanceFactor = 1.0, accent = 1.0) {
     this.init();
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
+    const vol = Math.max(0.1, Math.min(1, 1 / (distanceFactor || 1))) * accent;
+    if (this.playSample('drum', vol)) return;
 
-    const t = this.ctx.currentTime;
-    const vol = Math.max(0.1, Math.min(1, 1 / (distanceFactor || 1)));
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
 
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(120, t);
-    osc.frequency.exponentialRampToValueAtTime(45, t + 0.2);
-
-    gain.gain.setValueAtTime(0.9 * vol, t);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
-
-    osc.connect(gain);
-    gain.connect(this.sfxGain);
-
+    const out = ctx.createGain();
+    out.gain.value = vol;
+    const warm = ctx.createWaveShaper();
+    warm.curve = this.getSaturationCurve();
+    out.connect(warm);
+    warm.connect(this.sfxGain);
     if (this.convolver) {
-      const rev = this.ctx.createGain();
-      rev.gain.value = 0.4;
-      gain.connect(rev);
+      const rev = ctx.createGain();
+      rev.gain.value = 0.55;
+      warm.connect(rev);
       rev.connect(this.convolver);
     }
 
-    osc.start(t);
-    osc.stop(t + 2.0);
+    // 1. Thân trống: các mode cộng hưởng, cao độ tụt nhanh lúc đầu (da trống chùng lại)
+    const modes: [number, number, number, number][] = [
+      [96, 56, 1.0, 1.6],
+      [158, 102, 0.42, 0.8],
+      [236, 168, 0.16, 0.4]
+    ];
+    for (const [f0, f1, amp, decay] of modes) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f1, t + 0.14);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(amp, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(t);
+      osc.stop(t + decay + 0.05);
+    }
+
+    // 2. Tiếng da trống: nhiễu lọc dải trầm-trung, tắt nhanh
+    const skin = ctx.createBufferSource();
+    skin.buffer = this.getNoiseBuffer();
+    const skinFilter = ctx.createBiquadFilter();
+    skinFilter.type = 'bandpass';
+    skinFilter.frequency.setValueAtTime(420, t);
+    skinFilter.frequency.exponentialRampToValueAtTime(160, t + 0.2);
+    skinFilter.Q.value = 1.2;
+    const skinGain = ctx.createGain();
+    skinGain.gain.setValueAtTime(0.55, t);
+    skinGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    skin.connect(skinFilter);
+    skinFilter.connect(skinGain);
+    skinGain.connect(out);
+    skin.start(t);
+    skin.stop(t + 0.3);
+
+    // 3. Tiếng dùi gỗ chạm mặt trống
+    const click = ctx.createBufferSource();
+    click.buffer = this.getNoiseBuffer();
+    const clickFilter = ctx.createBiquadFilter();
+    clickFilter.type = 'highpass';
+    clickFilter.frequency.value = 1800;
+    const clickGain = ctx.createGain();
+    clickGain.gain.setValueAtTime(0.25, t);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+    click.connect(clickFilter);
+    clickFilter.connect(clickGain);
+    clickGain.connect(out);
+    click.start(t);
+    click.stop(t + 0.05);
+  }
+
+  private noiseBuffer: AudioBuffer | null = null;
+  private getNoiseBuffer(): AudioBuffer {
+    if (!this.noiseBuffer && this.ctx) {
+      const len = this.ctx.sampleRate;
+      this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = this.noiseBuffer.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    return this.noiseBuffer!;
+  }
+
+  private saturationCurve: Float32Array<ArrayBuffer> | null = null;
+  private getSaturationCurve(): Float32Array<ArrayBuffer> {
+    if (!this.saturationCurve) {
+      const n = 1024;
+      this.saturationCurve = new Float32Array(new ArrayBuffer(n * 4));
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * 2 - 1;
+        this.saturationCurve[i] = Math.tanh(x * 1.6) / Math.tanh(1.6);
+      }
+    }
+    return this.saturationCurve;
+  }
+
+  // ===================== ÂM THANH TỪ FILE (TUỲ CHỌN) =====================
+  // Bỏ file vào public/sfx với tên drum / bell / woodfish / chime (.mp3, .ogg, .wav)
+  // thì sẽ dùng file đó thay cho âm thanh tổng hợp.
+  private samples = new Map<string, AudioBuffer>();
+  private samplesRequested = false;
+
+  private loadCustomSamples() {
+    if (this.samplesRequested || !this.ctx) return;
+    this.samplesRequested = true;
+    fetch('/api/sfx')
+      .then(res => (res.ok ? res.json() : []))
+      .then(async (files: string[]) => {
+        for (const file of files) {
+          const key = file.replace(/\.[^/.]+$/, '').toLowerCase();
+          if (!['drum', 'bell', 'woodfish', 'chime'].includes(key)) continue;
+          try {
+            const buf = await (await fetch(`/sfx/${encodeURIComponent(file)}`)).arrayBuffer();
+            this.samples.set(key, await this.ctx!.decodeAudioData(buf));
+          } catch (err) {
+            console.warn('Không đọc được file âm thanh', file, err);
+          }
+        }
+      })
+      .catch(() => {});
+  }
+
+  private playSample(key: string, vol: number): boolean {
+    const buf = this.samples.get(key);
+    if (!buf || !this.ctx || !this.sfxGain) return false;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const g = this.ctx.createGain();
+    g.gain.value = vol;
+    src.connect(g);
+    g.connect(this.sfxGain);
+    src.start();
+    return true;
   }
 
   // ===================== TIẾNG KHÁNH NHỎ (CHIME) =====================
@@ -257,6 +370,7 @@ class SoundEngine {
     this.init();
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
+    if (this.playSample('chime', 0.8)) return;
 
     const t = this.ctx.currentTime;
     const osc1 = this.ctx.createOscillator();
@@ -326,6 +440,47 @@ class SoundEngine {
     783.99, // G5
     880.00  // A5
   ];
+
+  // ===================== NHẠC NỀN: TỔNG HỢP HOẶC FILE MP3 =====================
+  public currentTrack = (() => {
+    try { return localStorage.getItem('chua_music_track') || 'synth_zen'; } catch { return 'synth_zen'; }
+  })();
+  private audioEl: HTMLAudioElement | null = null;
+
+  // Bắt đầu nhạc nền theo bài đã chọn lần trước
+  public startMusic() {
+    this.playTrack(this.currentTrack);
+  }
+
+  // id = 'synth_zen' (nhạc tổng hợp) hoặc tên file trong public/music
+  public playTrack(id: string) {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.musicGain) return;
+    this.currentTrack = id;
+    try { localStorage.setItem('chua_music_track', id); } catch {}
+
+    if (id === 'synth_zen') {
+      this.audioEl?.pause();
+      this.startZenMusic();
+      return;
+    }
+
+    this.stopMusic();
+    if (!this.audioEl) {
+      this.audioEl = new Audio();
+      this.audioEl.loop = true;
+      this.audioEl.preload = 'auto';
+      // Đi qua musicGain để thanh âm lượng nhạc & nút tắt tiếng vẫn hoạt động
+      this.ctx.createMediaElementSource(this.audioEl).connect(this.musicGain);
+      this.audioEl.addEventListener('error', () => {
+        console.warn('Không phát được file nhạc, quay về nhạc thiền tổng hợp');
+        this.playTrack('synth_zen');
+      });
+    }
+    this.audioEl.src = `/music/${encodeURIComponent(id)}`;
+    this.audioEl.play().catch(() => {});
+  }
 
   public startZenMusic() {
     this.init();
