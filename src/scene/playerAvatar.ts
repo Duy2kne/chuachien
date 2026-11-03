@@ -721,18 +721,18 @@ export class PlayerAvatar {
     const broom = new THREE.Group();
     broom.rotation.order = 'YXZ';
     const handleMat = new THREE.MeshStandardMaterial({ color: 0xa3793f, roughness: 0.7 });
-    const broomHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 1.0, 8), handleMat);
-    broomHandle.position.y = -0.45;
+    const broomHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 0.8, 8), handleMat);
+    broomHandle.position.y = -0.36;
     broom.add(broomHandle);
     const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 10), new THREE.MeshStandardMaterial({ color: 0x5b3a1a }));
-    tie.position.y = -0.94;
+    tie.position.y = -0.74;
     broom.add(tie);
     const straw = new THREE.Mesh(
       new THREE.CylinderGeometry(0.035, 0.17, 0.36, 14, 1, true),
       new THREE.MeshStandardMaterial({ color: 0xc8a24a, roughness: 0.95, side: THREE.DoubleSide })
     );
     straw.scale.z = 0.4;
-    straw.position.y = -1.13;
+    straw.position.y = -0.9;
     broom.add(straw);
     broom.position.set(0, 0.22, 0.3);
     this.hips.add(broom);
@@ -1103,7 +1103,7 @@ export class PlayerAvatar {
         p.footL = 0.06;
         p.footR = -0.04;
         show.broom = true;
-        this.props.broom.rotation.set(-0.95 + 0.25 * (1 - active), swing, 0);
+        this.props.broom.rotation.set(-1.25 + 0.3 * (1 - active), swing, 0);
         break;
       }
 
