@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType } from './src/types.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, RobeColor } from './src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,8 +50,42 @@ function saveStats() {
   }
 }
 
-// Lưu stats định kỳ mỗi 60 giây
-setInterval(saveStats, 60000);
+// ===================== CÔNG ĐỨC (lưu ở server theo mã người dùng) =====================
+// Mỗi trình duyệt có 1 mã ngẫu nhiên (uid) lưu trong localStorage; công đức gắn với mã này.
+const MERIT_FILE = path.join(__dirname, 'data', 'merit.json');
+interface MeritRecord { name: string; merit: number; robe: RobeColor; updatedAt: number }
+const meritStore = new Map<string, MeritRecord>();
+try {
+  if (fs.existsSync(MERIT_FILE)) {
+    const raw = JSON.parse(fs.readFileSync(MERIT_FILE, 'utf-8')) as Record<string, MeritRecord>;
+    for (const [uid, rec] of Object.entries(raw)) meritStore.set(uid, rec);
+  }
+} catch (err) {
+  console.warn('Không thể đọc data/merit.json:', err);
+}
+let meritDirty = false;
+
+function saveMerit() {
+  if (!meritDirty) return;
+  try {
+    const dir = path.dirname(MERIT_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(MERIT_FILE, JSON.stringify(Object.fromEntries(meritStore)), 'utf-8');
+    meritDirty = false;
+  } catch (err) {
+    console.error('Lỗi lưu data/merit.json:', err);
+  }
+}
+
+// Lưu stats + công đức định kỳ mỗi 60 giây
+setInterval(() => {
+  saveStats();
+  saveMerit();
+}, 60000);
+
+// ===================== CẢNH CỦA TỪNG PHÒNG =====================
+const THEMES = ['chieu-vang', 'xuan-hoa-dao', 'thu-la-vang', 'dong-suong-tuyet', 'dem-trang'];
+const randomTheme = () => THEMES[Math.floor(Math.random() * THEMES.length)];
 
 interface RoomState {
   id: string;
@@ -64,13 +98,15 @@ interface RoomState {
   lanterns: LanternItem[];
   lastBellTime: number;
   lastDrumTime: number;
+  leaves: LeafPile[];
+  theme: string;
 }
 
-const BASE_ROOMS: { id: string; name: string }[] = [
-  { id: 'tu-bi', name: 'Từ Bi' },
-  { id: 'hy-xa', name: 'Hỷ Xả' },
-  { id: 'an-lac', name: 'An Lạc' },
-  { id: 'thanh-tinh', name: 'Thanh Tịnh' }
+const BASE_ROOMS: { id: string; name: string; theme: string }[] = [
+  { id: 'tu-bi', name: 'Từ Bi', theme: 'chieu-vang' },
+  { id: 'hy-xa', name: 'Hỷ Xả', theme: 'xuan-hoa-dao' },
+  { id: 'an-lac', name: 'An Lạc', theme: 'thu-la-vang' },
+  { id: 'thanh-tinh', name: 'Thanh Tịnh', theme: 'dong-suong-tuyet' }
 ];
 
 const EXTRA_ROOM_NAMES = [
@@ -92,7 +128,9 @@ for (const base of BASE_ROOMS) {
     flowers: [],
     lanterns: [],
     lastBellTime: 0,
-    lastDrumTime: 0
+    lastDrumTime: 0,
+    leaves: [],
+    theme: base.theme
   });
 }
 
@@ -104,6 +142,9 @@ interface PlayerSession {
   data: PlayerData;
   lastActionTime: number;
   lastChatTime: number;
+  lastProfileTime?: number;
+  uid: string;
+  meritCooldown: Map<string, number>;
 }
 
 const players = new Map<string, PlayerSession>();
@@ -134,6 +175,105 @@ app.use(helmet({
 app.use(compression());
 app.use(express.json({ limit: '100kb' }));
 
+// Top công đức toàn chùa
+function getLeaderboard(limit = 20): LeaderboardEntry[] {
+  const onlineUids = new Set(Array.from(players.values()).map(p => p.uid));
+  return Array.from(meritStore.entries())
+    .filter(([, r]) => r.merit > 0)
+    .sort((a, b) => b[1].merit - a[1].merit)
+    .slice(0, limit)
+    .map(([uid, r]) => ({ name: r.name, merit: r.merit, robe: r.robe, online: onlineUids.has(uid) }));
+}
+
+let leaderboardTimer: NodeJS.Timeout | null = null;
+function scheduleLeaderboardBroadcast() {
+  if (leaderboardTimer) return;
+  leaderboardTimer = setTimeout(() => {
+    leaderboardTimer = null;
+    io.emit('leaderboard', getLeaderboard());
+  }, 2000);
+}
+
+// Cộng công đức (nguồn sự thật duy nhất là server)
+function addMerit(session: PlayerSession, gain: number) {
+  if (gain <= 0) return;
+  session.data.merit += gain;
+  stats.totalMerit = (stats.totalMerit || 0) + gain;
+  meritStore.set(session.uid, {
+    name: session.data.name,
+    merit: session.data.merit,
+    robe: session.data.robe,
+    updatedAt: Date.now()
+  });
+  meritDirty = true;
+  io.to(session.room).emit('merit:update', { id: session.data.id, merit: session.data.merit, gain });
+  scheduleLeaderboardBroadcast();
+}
+
+// Hành động bật/tắt (chắp tay, thiền, gõ mõ) chỉ được cộng công đức 1 lần mỗi 20 giây
+const TOGGLE_MERIT_COOLDOWN = 20000;
+
+// ===================== LÁ ĐA RỤNG =====================
+const MAX_LEAVES_PER_ROOM = 18;
+// Vật cản lớn trong sân (lá không rơi vào các chỗ này): [x, z, bán kính]
+const LEAF_BLOCKERS: [number, number, number][] = [
+  [-18, 24, 9.2], [-18, 14, 3.6], [0, 0.4, 2.2], [18, 8, 5.2],
+  [-3.8, 0, 1], [3.8, 0, 1], [-3.8, 8, 1], [3.8, 8, 1], [-3.8, 16, 1], [3.8, 16, 1], [-3.8, 24, 1], [3.8, 24, 1],
+  [-5.2, -2.5, 1], [5.2, -2.5, 1], [-8.5, 4, 1], [8.5, 4, 1], [-8.5, 16, 1], [8.5, 16, 1], [-8.5, 28, 1], [8.5, 28, 1],
+  [-24, 4, 1.3], [-25, -8, 1.3], [-20, -18, 1.3], [24, 4, 1.3], [25, -8, 1.3], [20, -18, 1.3], [24, 14, 1.3], [24, 34, 1.3],
+  [-24, 34, 1.3], [26, 24, 1.3]
+];
+// Vùng lá có thể rơi: quanh gốc bồ đề, hai bên sân, ven tường cây xanh, lối đi
+const LEAF_ZONES: [number, number, number, number, number][] = [
+  // [minX, maxX, minZ, maxZ, trọng số]
+  [-24, -12, 8, 16, 4],   // dưới tán bồ đề
+  [-14, -5, -2, 30, 3],   // sân bên trái
+  [5, 14, -2, 30, 3],     // sân bên phải
+  [-2.5, 2.5, 4, 30, 2],  // lối đi giữa
+  [-27, -21, -16, 4, 2],  // dưới hàng cây bên trái
+  [21, 27, -16, 2, 2],    // dưới hàng cây bên phải
+  [-11, 11, -3.2, -0.8, 1] // trước bậc thềm chính điện
+];
+
+function randomLeafSpot(): { x: number; z: number } | null {
+  const total = LEAF_ZONES.reduce((a, z) => a + z[4], 0);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let r = Math.random() * total;
+    const zone = LEAF_ZONES.find(z => (r -= z[4]) < 0) || LEAF_ZONES[0];
+    const x = zone[0] + Math.random() * (zone[1] - zone[0]);
+    const z = zone[2] + Math.random() * (zone[3] - zone[2]);
+    if (LEAF_BLOCKERS.some(([bx, bz, br]) => Math.hypot(x - bx, z - bz) < br)) continue;
+    return { x: +x.toFixed(2), z: +z.toFixed(2) };
+  }
+  return null;
+}
+
+// Mỗi 6 giây, phòng có người thì có thể rụng thêm 1 đống lá
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (room.players.size === 0 || room.leaves.length >= MAX_LEAVES_PER_ROOM) continue;
+    if (Math.random() > 0.55) continue;
+    const spot = randomLeafSpot();
+    if (!spot) continue;
+    const leaf: LeafPile = {
+      id: `leaf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      x: spot.x,
+      z: spot.z,
+      seed: Math.floor(Math.random() * 100000),
+      createdAt: Date.now()
+    };
+    room.leaves.push(leaf);
+    io.to(room.id).emit('leaves:add', leaf);
+  }
+}, 6000);
+
+// Thiền, gõ mõ, chắp tay liên tục: cứ 30 giây được thêm 1 công đức
+setInterval(() => {
+  for (const session of players.values()) {
+    if (['meditate', 'wooden_fish', 'namaste'].includes(session.data.anim)) addMerit(session, 1);
+  }
+}, 30000);
+
 // Helper lấy danh sách phòng
 function getRoomList(): RoomInfo[] {
   const list: RoomInfo[] = [];
@@ -143,7 +283,8 @@ function getRoomList(): RoomInfo[] {
       name: r.name,
       count: r.players.size,
       max: MAX_PER_ROOM,
-      isBase: r.isBase
+      isBase: r.isBase,
+      theme: r.theme
     });
   }
   return list;
@@ -168,8 +309,23 @@ app.get('/api/rooms', (_req, res) => {
   });
 });
 
+app.get('/api/leaderboard', (_req, res) => {
+  res.json(getLeaderboard());
+});
+
 app.get('/api/stats', (_req, res) => {
   res.json(stats);
+});
+
+// Âm thanh tuỳ chọn thay cho âm thanh tổng hợp (drum / bell / woodfish / chime)
+app.get('/api/sfx', (_req, res) => {
+  const sfxDir = path.join(__dirname, 'public', 'sfx');
+  try {
+    const files = fs.existsSync(sfxDir) ? fs.readdirSync(sfxDir).filter(f => /\.(mp3|ogg|wav)$/i.test(f)) : [];
+    res.json(files);
+  } catch {
+    res.json([]);
+  }
 });
 
 app.get('/api/music', (_req, res) => {
@@ -182,7 +338,7 @@ app.get('/api/music', (_req, res) => {
     if (fs.existsSync(musicDir)) {
       const files = fs.readdirSync(musicDir);
       for (const file of files) {
-        if (file.endsWith('.mp3') || file.endsWith('.ogg')) {
+        if (/\.(mp3|ogg|m4a|wav)$/i.test(file)) {
           tracks.push({
             id: file,
             name: file.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '),
@@ -240,7 +396,9 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
           flowers: [],
           lanterns: [],
           lastBellTime: 0,
-          lastDrumTime: 0
+          lastDrumTime: 0,
+          leaves: [],
+          theme: baseTarget.theme
         };
         rooms.set(subId, newRoom);
         return newRoom;
@@ -274,7 +432,9 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
       flowers: [],
       lanterns: [],
       lastBellTime: 0,
-      lastDrumTime: 0
+      lastDrumTime: 0,
+      leaves: [],
+      theme: randomTheme()
     };
     rooms.set(newId, newRoom);
     return newRoom;
@@ -323,7 +483,9 @@ io.on('connection', (socket: Socket) => {
       flowers: [],
       lanterns: [],
       lastBellTime: 0,
-      lastDrumTime: 0
+      lastDrumTime: 0,
+      leaves: [],
+      theme: randomTheme()
     };
 
     rooms.set(newId, newRoom);
@@ -336,12 +498,18 @@ io.on('connection', (socket: Socket) => {
   });
 
   // Sự kiện vào chùa (join)
-  socket.on('join', (data: { name?: string; robe?: any; style?: any; room?: string; merit?: number }, callback) => {
+  socket.on('join', (data: { name?: string; robe?: any; style?: any; room?: string; merit?: number; uid?: string }, callback) => {
     const rawName = (data?.name || '').trim();
     const name = cleanText(rawName, 20) || 'Phật tử';
     const robe = ['blue', 'brown', 'orange', 'grey', 'yellow', 'white', 'moss'].includes(data?.robe) ? data.robe : 'blue';
     const style = ['monk', 'lay'].includes(data?.style) ? data.style : 'monk';
-    const merit = Math.max(0, Math.min(1000000, Number(data?.merit) || 0));
+    // Mã người dùng: hợp lệ thì dùng lại, không thì cấp mã mới
+    const uid = typeof data?.uid === 'string' && /^[A-Za-z0-9-]{16,64}$/.test(data.uid)
+      ? data.uid
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    // Công đức lấy từ server; người cũ chưa có trên server thì nhận tối đa 300 từ máy cũ
+    const stored = meritStore.get(uid);
+    const merit = stored ? stored.merit : Math.max(0, Math.min(300, Math.floor(Number(data?.merit) || 0)));
 
     // Lựa chọn phòng
     const room = resolveRoomForJoin(data?.room);
@@ -391,9 +559,13 @@ io.on('connection', (socket: Socket) => {
       room: room.id,
       data: playerData,
       lastActionTime: 0,
-      lastChatTime: 0
+      lastChatTime: 0,
+      uid,
+      meritCooldown: new Map()
     };
     players.set(socket.id, session);
+    meritStore.set(uid, { name, merit, robe, updatedAt: Date.now() });
+    meritDirty = true;
 
     // Cập nhật thống kê
     stats.totalVisits += 1;
@@ -407,10 +579,13 @@ io.on('connection', (socket: Socket) => {
     const payload = {
       self: playerData,
       players: roomPlayers,
-      room: { id: room.id, name: room.name, count: room.players.size, max: MAX_PER_ROOM },
+      room: { id: room.id, name: room.name, count: room.players.size, max: MAX_PER_ROOM, theme: room.theme },
       incense: room.incense,
       flowers: room.flowers,
       lanterns: room.lanterns,
+      leaves: room.leaves,
+      uid,
+      leaderboard: getLeaderboard(),
       serverTime: Date.now(),
       wasRedirected,
       stats
@@ -603,11 +778,34 @@ io.on('connection', (socket: Socket) => {
         session.data.anim = 'wave';
         break;
 
+      case 'sweep': {
+        // Quét đống lá ở gần: phải đứng cách đống lá dưới 3 mét
+        const leafIdx = room.leaves.findIndex(l => l.id === data.text);
+        const leaf = room.leaves[leafIdx];
+        if (!leaf || Math.hypot(leaf.x - session.data.x, leaf.z - session.data.z) > 3) {
+          if (typeof callback === 'function') callback({ error: 'Đống lá này đã được quét rồi 🙏' });
+          return;
+        }
+        room.leaves.splice(leafIdx, 1);
+        io.to(room.id).emit('leaves:remove', { id: leaf.id, by: session.data.id });
+        meritGain = 2;
+        stats.sweepCount = (stats.sweepCount || 0) + 1;
+        session.data.anim = 'sweep';
+        broadCastText = `${session.data.name} vừa quét sạch lá đa trên sân chùa 🍂`;
+        break;
+      }
+
       default:
         session.data.anim = actionType;
     }
 
-    session.data.merit += meritGain;
+    // Hành động bật/tắt: chỉ cộng công đức 1 lần mỗi 20 giây (tránh bấm liên tục để cày điểm)
+    if (['namaste', 'meditate', 'wooden_fish'].includes(actionType)) {
+      const last = session.meritCooldown.get(actionType) || 0;
+      if (now - last < TOGGLE_MERIT_COOLDOWN) meritGain = 0;
+      else session.meritCooldown.set(actionType, now);
+    }
+    addMerit(session, meritGain);
 
     // Phát action tới mọi người trong phòng
     io.to(room.id).emit('player:action', {
@@ -651,6 +849,50 @@ io.on('connection', (socket: Socket) => {
     if (typeof callback === 'function') callback({ ok: true });
   });
 
+  // Đổi tên / màu áo / dáng nhân vật ngay trong chùa (không cần tải lại trang)
+  socket.on('profile:update', (data: { name?: string; robe?: any; style?: any }, callback) => {
+    const session = players.get(socket.id);
+    if (!session) return;
+
+    const now = Date.now();
+    if (now - (session.lastProfileTime || 0) < 3000) {
+      if (typeof callback === 'function') callback({ error: 'Xin chờ vài giây rồi đổi tiếp 🙏' });
+      return;
+    }
+
+    const p = session.data;
+    const oldName = p.name;
+    if (typeof data?.name === 'string') {
+      const name = cleanText(data.name.trim(), 20);
+      if (!name) {
+        if (typeof callback === 'function') callback({ error: 'Tên không hợp lệ' });
+        return;
+      }
+      p.name = name;
+    }
+    if (['blue', 'brown', 'orange', 'grey', 'yellow', 'white', 'moss'].includes(data?.robe)) p.robe = data.robe;
+    if (['monk', 'lay'].includes(data?.style)) p.style = data.style;
+    session.lastProfileTime = now;
+    meritStore.set(session.uid, { name: p.name, merit: p.merit, robe: p.robe, updatedAt: now });
+    meritDirty = true;
+    scheduleLeaderboardBroadcast();
+
+    const update = { id: p.id, name: p.name, robe: p.robe, style: p.style };
+    socket.to(session.room).emit('player:update', update);
+
+    if (oldName !== p.name) {
+      io.to(session.room).emit('chat:message', {
+        id: `sys-${now}`,
+        playerId: 'system',
+        playerName: 'Chùa',
+        text: `${oldName} đã đổi pháp danh thành ${p.name} 🙏`,
+        time: now,
+        isSystem: true
+      } as ChatMessage);
+    }
+    if (typeof callback === 'function') callback({ ok: true, self: update });
+  });
+
   // Chuyển phòng (room:switch)
   socket.on('room:switch', (targetRoomId: string, callback) => {
     const session = players.get(socket.id);
@@ -686,11 +928,12 @@ io.on('connection', (socket: Socket) => {
 
     const payload = {
       ok: true,
-      room: { id: targetRoom.id, name: targetRoom.name, count: targetRoom.players.size, max: MAX_PER_ROOM },
+      room: { id: targetRoom.id, name: targetRoom.name, count: targetRoom.players.size, max: MAX_PER_ROOM, theme: targetRoom.theme },
       players: Array.from(targetRoom.players.values()),
       incense: targetRoom.incense,
       flowers: targetRoom.flowers,
-      lanterns: targetRoom.lanterns
+      lanterns: targetRoom.lanterns,
+      leaves: targetRoom.leaves
     };
 
     if (typeof callback === 'function') {
@@ -816,6 +1059,7 @@ async function startServer() {
 function shutdown() {
   console.log('Đang lưu công đức và tắt máy chủ trang nghiêm...');
   saveStats();
+  saveMerit();
   httpServer.close(() => {
     process.exit(0);
   });
