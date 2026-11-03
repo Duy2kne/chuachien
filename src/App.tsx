@@ -5,14 +5,17 @@ import { TempleWorld } from './scene/templeWorld.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
-import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem } from './types.js';
+import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem, LeaderboardEntry } from './types.js';
 import { EntranceScreen } from './components/EntranceScreen.js';
 import { ActionBar } from './components/ActionBar.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { RoomModal } from './components/RoomModal.js';
 import { LanternDialog } from './components/LanternDialog.js';
 import { AudioSettingsModal } from './components/AudioSettingsModal.js';
-import { Sun, Moon, Music, Maximize2, Sparkles } from 'lucide-react';
+import { ProfileModal } from './components/ProfileModal.js';
+import { LeaderboardModal } from './components/LeaderboardModal.js';
+import { getTheme } from './scene/themes.js';
+import { Sun, Moon, Music, Maximize2, Sparkles, UserPen, Trophy } from 'lucide-react';
 
 const _targetLook = new THREE.Vector3();
 const _camDir = new THREE.Vector3();
@@ -34,9 +37,10 @@ interface AutoWalkTarget {
   ry: number;
   anim: ActionType;
   text?: string;
-  startTime: number;
+  walkTime: number;    // số giây đã tự đi (theo thời gian game, không theo đồng hồ thật)
   bestDist: number;
-  lastProgress: number;
+  stuckTime: number;   // số giây liên tục không tiến gần hơn tới đích
+  turnSign: number; // hướng vòng tránh vật cản đang dùng (1 / -1), giữ cố định để không lắc qua lại
 }
 
 export default function App() {
@@ -44,7 +48,9 @@ export default function App() {
 
   // Trạng thái giao diện
   const [hasEntered, setHasEntered] = useState(false);
-  const [currentRoom, setCurrentRoom] = useState({ id: 'tu-bi', name: 'Từ Bi', count: 1, max: 50 });
+  const [currentRoom, setCurrentRoom] = useState<{ id: string; name: string; count: number; max: number; theme?: string }>({ id: 'tu-bi', name: 'Từ Bi', count: 1, max: 50 });
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [roomList, setRoomList] = useState<RoomInfo[]>([]);
   const [overallStats, setOverallStats] = useState<OverallStats>({
     totalVisits: 156,
@@ -56,13 +62,7 @@ export default function App() {
     drumCount: 54
   });
 
-  const [merit, setMerit] = useState<number>(() => {
-    try {
-      return parseInt(localStorage.getItem('chua_merit') || '0', 10);
-    } catch {
-      return 0;
-    }
-  });
+  const [merit, setMerit] = useState<number>(0);
 
   const [floatingMerit, setFloatingMerit] = useState<{ id: number; amount: number }[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -72,6 +72,7 @@ export default function App() {
   // Modals
   const [showRoomModal, setShowRoomModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [lanternModalState, setLanternModalState] = useState<{
     open: boolean;
     mode: 'release' | 'view';
@@ -176,6 +177,30 @@ export default function App() {
       if (data.text) showToast(data.text);
     };
 
+    network.onMeritUpdate = ({ id, merit: value, gain }) => {
+      setOverallStats(prev => ({ ...prev, totalMerit: (prev.totalMerit || 0) + gain }));
+      if (id === network.selfData?.id) {
+        setMerit(value);
+        if (selfAvatarRef.current) selfAvatarRef.current.data.merit = value;
+        addMeritEffect(gain);
+      } else {
+        const avatar = otherAvatarsRef.current.get(id);
+        if (avatar) avatar.data.merit = value;
+      }
+      updateOnlinePlayers();
+    };
+    network.onLeaderboard = (list) => setLeaderboard(list);
+    network.onLeafAdded = (leaf) => worldRef.current?.addLeafPile(leaf, true);
+    // Lá biến mất sau khi chổi quét được vài nhịp
+    network.onLeafRemoved = ({ id }) => worldRef.current?.removeLeafPile(id, 1700);
+
+    network.onPlayerUpdated = (data) => {
+      const avatar = otherAvatarsRef.current.get(data.id);
+      if (!avatar) return;
+      otherAvatarsRef.current.set(data.id, rebuildAvatar(avatar, data));
+      updateOnlinePlayers();
+    };
+
     network.onChatMessage = (msg) => {
       setMessages(prev => [...prev.slice(-40), msg]);
       if (msg.playerId === network.selfData?.id) {
@@ -235,6 +260,40 @@ export default function App() {
     return avatar;
   };
 
+  const rebuildAvatar = (old: PlayerAvatar, patch: Partial<PlayerData>) => {
+    const data: PlayerData = {
+      ...old.data,
+      ...patch,
+      x: old.group.position.x,
+      y: old.group.position.y,
+      z: old.group.position.z,
+      ry: old.group.rotation.y,
+      anim: old.currentAnim
+    };
+    sceneRef.current?.remove(old.group);
+    old.dispose();
+    const fresh = createAvatar(data, old.isSelf);
+    fresh.targetPos.copy(old.targetPos);
+    fresh.targetRy = old.targetRy;
+    return fresh;
+  };
+
+  // Lưu hồ sơ mới: gửi lên server, đổi nhân vật của mình ngay lập tức
+  const handleSaveProfile = async (data: { name: string; robe: RobeColor; style: AvatarStyle }) => {
+    const res = await network.updateProfile(data);
+    if (res.error) return res.error;
+    const self = selfAvatarRef.current;
+    if (self) selfAvatarRef.current = rebuildAvatar(self, data);
+    try {
+      localStorage.setItem('chua_name', data.name);
+      localStorage.setItem('chua_robe', data.robe);
+      localStorage.setItem('chua_style', data.style);
+    } catch {}
+    updateOnlinePlayers();
+    showToast(`Đã cập nhật hồ sơ: ${data.name} 🙏`);
+    return null;
+  };
+
   const updateOnlinePlayers = () => {
     const list: PlayerData[] = [];
     if (selfAvatarRef.current) list.push(selfAvatarRef.current.data);
@@ -249,13 +308,9 @@ export default function App() {
     }, 4500);
   };
 
+  // Hiệu ứng "+N" bay lên khi được cộng công đức (con số thật do server gửi qua merit:update)
   const addMeritEffect = (gain: number) => {
     if (gain <= 0) return;
-    setMerit(prev => {
-      const next = prev + gain;
-      try { localStorage.setItem('chua_merit', next.toString()); } catch {}
-      return next;
-    });
 
     const id = Date.now();
     setFloatingMerit(prev => [...prev, { id, amount: gain }]);
@@ -393,11 +448,10 @@ export default function App() {
 
   // Bắt đầu tự đi tới một vị trí (bấm hành động hoặc chạm mặt đất)
   const startAutoWalk = (x: number, z: number, ry: number, anim: ActionType, text?: string) => {
-    const now = Date.now();
-    autoWalkTarget.current = { x, z, ry, anim, text, startTime: now, bestDist: Infinity, lastProgress: now };
+    autoWalkTarget.current = { x, z, ry, anim, text, walkTime: 0, bestDist: Infinity, stuckTime: 0, turnSign: 0 };
     setIsNavigating(true);
     if (destinationMarkerRef.current) {
-      destinationMarkerRef.current.position.set(x, (worldRef.current?.checkCollision(x, z).height || 0) + 0.05, z);
+      destinationMarkerRef.current.position.set(x, (worldRef.current?.getGroundHeight(x, z) || 0) + 0.05, z);
     }
   };
 
@@ -430,19 +484,21 @@ export default function App() {
       const dx = target.x - pos.x;
       const dz = target.z - pos.z;
       const dist = Math.hypot(dx, dz);
-      const now = Date.now();
 
+      target.walkTime += delta;
       if (dist < target.bestDist - 0.05) {
         target.bestDist = dist;
-        target.lastProgress = now;
+        target.stuckTime = 0;
+      } else {
+        target.stuckTime += delta;
       }
       // Bị kẹt quá 1.5 giây (hoặc đi quá 8 giây) thì dịch chuyển thẳng tới đích
-      const stuck = now - target.lastProgress > 1500 || now - target.startTime > 8000;
+      const stuck = target.stuckTime > 1.5 || target.walkTime > 12;
 
       if (dist < 0.3 || stuck) {
         pos.x = target.x;
         pos.z = target.z;
-        pos.y = world.checkCollision(target.x, target.z).height;
+        pos.y = world.getGroundHeight(target.x, target.z);
         avatar.group.rotation.y = target.ry;
         autoWalkTarget.current = null;
         setIsNavigating(false);
@@ -506,20 +562,36 @@ export default function App() {
         return true;
       };
 
-      // Đi thẳng; nếu vướng thì trượt dọc vật cản; khi tự đi thì thử vòng tránh
-      let moved =
-        tryMove(moveX * speed, moveZ * speed) ||
-        tryMove(moveX * speed, 0) ||
-        tryMove(0, moveZ * speed);
-      if (!moved && autoWalkTarget.current) {
-        for (const turn of [0.8, -0.8, 1.4, -1.4]) {
-          const c = Math.cos(turn);
-          const sn = Math.sin(turn);
-          if (tryMove((moveX * c - moveZ * sn) * speed, (moveX * sn + moveZ * c) * speed)) {
-            moved = true;
-            break;
+      const target = autoWalkTarget.current;
+      if (target) {
+        // Tự đi: bị chắn thì rẽ vòng qua vật cản (giữ một bên rẽ cố định cho tới khi đi thẳng lại được)
+        if (tryMove(moveX * speed, moveZ * speed)) {
+          target.turnSign = 0;
+        } else {
+          const signs = target.turnSign ? [target.turnSign, -target.turnSign] : [1, -1];
+          let found = false;
+          for (const turn of [0.5, 0.9, 1.3, 1.65]) {
+            for (const sign of signs) {
+              const c = Math.cos(turn * sign);
+              const sn = Math.sin(turn * sign);
+              const tx = moveX * c - moveZ * sn;
+              const tz = moveX * sn + moveZ * c;
+              if (tryMove(tx * speed, tz * speed)) {
+                target.turnSign = sign;
+                moveX = tx;
+                moveZ = tz;
+                found = true;
+                break;
+              }
+            }
+            if (found) break;
           }
         }
+      } else {
+        // Điều khiển tay: bị chắn thì trượt dọc theo vật cản
+        tryMove(moveX * speed, moveZ * speed) ||
+          tryMove(moveX * speed, 0) ||
+          tryMove(0, moveZ * speed);
       }
 
       const targetRy = Math.atan2(moveX, moveZ);
@@ -539,7 +611,7 @@ export default function App() {
     }
 
     // Độ cao theo nền (bậc thềm chính điện, lầu chuông)
-    pos.y = THREE.MathUtils.damp(pos.y, world.checkCollision(pos.x, pos.z, 0).height, 12, delta);
+    pos.y = THREE.MathUtils.damp(pos.y, world.getGroundHeight(pos.x, pos.z), 12, delta);
 
     // Đồng bộ vị trí + hành động (tự giới hạn ~12 lần/giây, chỉ gửi khi thay đổi)
     network.sendMove(pos.x, pos.y, pos.z, avatar.group.rotation.y, avatar.currentAnim);
@@ -772,6 +844,14 @@ export default function App() {
     cameraAngle.current.dist = Math.max(3.0, Math.min(13.0, cameraAngle.current.dist + e.deltaY * 0.005));
   };
 
+  // Đổi cảnh (mùa, thời tiết) theo phòng; phòng "Đêm trăng" luôn là ban đêm
+  const applyRoomTheme = (themeId?: string) => {
+    const theme = getTheme(themeId);
+    worldRef.current?.applyTheme(theme);
+    const hour = new Date().getHours();
+    setIsNight(theme.forceNight ? true : hour < 6 || hour >= 18);
+  };
+
   // Vào chùa
   const handleEnterTemple = async (data: { name: string; robe: RobeColor; style: AvatarStyle; roomId?: string }) => {
     try {
@@ -786,7 +866,8 @@ export default function App() {
         robe: data.robe,
         style: data.style,
         room: data.roomId,
-        merit
+        // Công đức cũ lưu trên máy (trước khi server quản lý) - server chỉ nhận tối đa 300 khi lần đầu vào
+        merit: (() => { try { return Number(localStorage.getItem('chua_merit') || 0); } catch { return 0; } })()
       });
 
       if (sceneRef.current) {
@@ -798,20 +879,25 @@ export default function App() {
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
+        worldRef.current?.syncLeafPiles(res.leaves || []);
       }
 
+      setMerit(res.self.merit || 0);
+      setLeaderboard(res.leaderboard || []);
+      applyRoomTheme(res.room.theme);
       setCurrentRoom({
         id: res.room.id,
         name: res.room.name,
         count: res.room.count,
-        max: res.room.max
+        max: res.room.max,
+        theme: res.room.theme
       });
 
       // Camera bắt đầu ngay sau lưng nhân vật, nhìn về chính điện
       cameraAngle.current = { theta: 0, phi: 0.28, dist: 5.4 };
       setHasEntered(true);
       updateOnlinePlayers();
-      sound.startZenMusic();
+      sound.startMusic();
 
       if (isTouchDevice) {
         showToast('Chạm trái để đi · Vuốt phải để xoay 🙏');
@@ -870,6 +956,25 @@ export default function App() {
         // Đứng trước mặt trống
         spot = { x: 18, z: 9.75, ry: Math.PI };
         break;
+      case 'sweep': {
+        // Đi tới đống lá gần nhất, đứng cách 0.75m quay mặt về đống lá
+        const world = worldRef.current;
+        const pos = self.group.position;
+        const pile = world?.getNearestLeafPile(pos.x, pos.z);
+        if (!world || !pile) {
+          showToast('Sân chùa đang sạch sẽ, chưa có lá rụng 🙏');
+          return;
+        }
+        const d = Math.hypot(pos.x - pile.x, pos.z - pile.z) || 1;
+        let sx = pile.x + ((pos.x - pile.x) / d) * 0.75;
+        let sz = pile.z + ((pos.z - pile.z) / d) * 0.75;
+        if (!world.checkCollision(sx, sz).allowed) {
+          sx = pile.x;
+          sz = pile.z;
+        }
+        startAutoWalk(sx, sz, faceTo(sx, sz, pile.x, pile.z), 'sweep', pile.id);
+        return;
+      }
     }
 
     if (spot) {
@@ -912,8 +1017,6 @@ export default function App() {
         avatar.currentAnim = 'idle';
         setCurrentAnim('idle');
       }
-    } else if (res?.meritGain) {
-      addMeritEffect(res.meritGain);
     }
   };
 
@@ -933,13 +1036,16 @@ export default function App() {
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
+        worldRef.current?.syncLeafPiles(res.leaves || []);
       }
 
+      applyRoomTheme(res.room.theme);
       setCurrentRoom({
         id: res.room.id,
         name: res.room.name,
         count: res.room.count,
-        max: res.room.max
+        max: res.room.max,
+        theme: res.room.theme
       });
 
       setShowRoomModal(false);
@@ -1027,6 +1133,7 @@ export default function App() {
                   <span>{currentRoom.count} người</span>
                   <span>·</span>
                   <span className="text-amber-300 underline font-medium">{currentRoom.name}</span>
+                  <span title={getTheme(currentRoom.theme).name}>{getTheme(currentRoom.theme).icon}</span>
                 </div>
               </div>
             </button>
@@ -1048,6 +1155,26 @@ export default function App() {
                 </span>
               ))}
             </div>
+
+            {/* Bảng công đức */}
+            <button
+              type="button"
+              onClick={() => setShowLeaderboard(true)}
+              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              title="Bảng công đức"
+            >
+              <Trophy size={15} />
+            </button>
+
+            {/* Đổi tên / áo / dáng nhân vật */}
+            <button
+              type="button"
+              onClick={() => setShowProfileModal(true)}
+              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              title="Đổi tên, màu áo"
+            >
+              <UserPen size={15} />
+            </button>
 
             {/* Bảng nhạc */}
             <button
@@ -1120,6 +1247,27 @@ export default function App() {
       )}
 
       {/* MODAL CÀI ĐẶT THANH ÂM */}
+      {showLeaderboard && (
+        <LeaderboardModal
+          entries={leaderboard}
+          roomPlayers={onlinePlayersList}
+          selfName={selfAvatarRef.current?.data.name || ''}
+          selfMerit={merit}
+          totalMerit={overallStats.totalMerit}
+          onClose={() => setShowLeaderboard(false)}
+        />
+      )}
+
+      {showProfileModal && selfAvatarRef.current && (
+        <ProfileModal
+          name={selfAvatarRef.current.data.name}
+          robe={selfAvatarRef.current.data.robe}
+          style={selfAvatarRef.current.data.style}
+          onClose={() => setShowProfileModal(false)}
+          onSave={handleSaveProfile}
+        />
+      )}
+
       {showAudioModal && (
         <AudioSettingsModal onClose={() => setShowAudioModal(false)} />
       )}
