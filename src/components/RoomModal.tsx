@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { RoomInfo, PlayerData } from '../types.js';
 import { ROBE_COLORS } from '../scene/playerAvatar.js';
-import { getTheme } from '../scene/themes.js';
+import { getTheme, THEMES } from '../scene/themes.js';
 import { X, Users, Copy, Check, Plus, DoorOpen } from 'lucide-react';
 
 interface RoomModalProps {
@@ -10,7 +10,8 @@ interface RoomModalProps {
   playersInRoom: PlayerData[];
   onClose: () => void;
   onSwitchRoom: (roomId: string) => void;
-  onCreateRoom: (name?: string) => Promise<any>;
+  onCreateRoom: (name?: string, theme?: string) => Promise<any>;
+  canPickTheme?: boolean;   // đã đổi "Phòng riêng tự chọn cảnh"
 }
 
 export const RoomModal: React.FC<RoomModalProps> = ({
@@ -19,8 +20,10 @@ export const RoomModal: React.FC<RoomModalProps> = ({
   playersInRoom,
   onClose,
   onSwitchRoom,
-  onCreateRoom
+  onCreateRoom,
+  canPickTheme = false
 }) => {
+  const [newTheme, setNewTheme] = useState('');
   const [tab, setTab] = useState<'players' | 'rooms'>('players');
   const [copied, setCopied] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -38,7 +41,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
     e.preventDefault();
     setErrorMsg('');
     try {
-      const res = await onCreateRoom(newRoomName.trim() || undefined);
+      const res = await onCreateRoom(newRoomName.trim() || undefined, newTheme || undefined);
       if (res?.error) {
         setErrorMsg(res.error);
       } else if (res?.room) {
@@ -177,7 +180,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
               </div>
 
               {isCreating && (
-                <form onSubmit={handleCreate} className="flex gap-2 p-2 bg-stone-950/80 rounded-xl border border-amber-600/30">
+                <form onSubmit={handleCreate} className="flex flex-wrap gap-2 p-2 bg-stone-950/80 rounded-xl border border-amber-600/30">
                   <input
                     type="text"
                     maxLength={20}
@@ -192,6 +195,20 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                   >
                     Tạo
                   </button>
+                  <select
+                    value={newTheme}
+                    disabled={!canPickTheme}
+                    onChange={(e) => setNewTheme(e.target.value)}
+                    className="w-full px-2 py-1 text-xs bg-stone-900 border border-stone-700 rounded text-stone-100 disabled:text-stone-500"
+                  >
+                    <option value="">{canPickTheme ? 'Cảnh: ngẫu nhiên' : '🔒 Cảnh ngẫu nhiên (đổi 500 công đức để tự chọn)'}</option>
+                    {canPickTheme &&
+                      Object.values(THEMES).map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.icon} {t.name}
+                        </option>
+                      ))}
+                  </select>
                 </form>
               )}
 
