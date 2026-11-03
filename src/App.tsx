@@ -5,7 +5,7 @@ import { TempleWorld } from './scene/templeWorld.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
-import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem, LeaderboardEntry } from './types.js';
+import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem, LeaderboardData } from './types.js';
 import { EntranceScreen } from './components/EntranceScreen.js';
 import { ActionBar } from './components/ActionBar.js';
 import { ChatPanel } from './components/ChatPanel.js';
@@ -14,8 +14,11 @@ import { LanternDialog } from './components/LanternDialog.js';
 import { AudioSettingsModal } from './components/AudioSettingsModal.js';
 import { ProfileModal } from './components/ProfileModal.js';
 import { LeaderboardModal } from './components/LeaderboardModal.js';
+import { ShopModal } from './components/ShopModal.js';
+import { COMMUNAL_PROJECTS, type MeritProfile, type CommunalState } from './shared/merit.js';
 import { getTheme } from './scene/themes.js';
-import { Sun, Moon, Music, Maximize2, Sparkles, UserPen, Trophy } from 'lucide-react';
+import { DINING, traySlot, type TrayItem } from './shared/dining.js';
+import { Sun, Moon, Music, Maximize2, Sparkles, UserPen, Trophy, Gift } from 'lucide-react';
 
 const _targetLook = new THREE.Vector3();
 const _camDir = new THREE.Vector3();
@@ -41,6 +44,39 @@ interface AutoWalkTarget {
   bestDist: number;
   stuckTime: number;   // số giây liên tục không tiến gần hơn tới đích
   turnSign: number; // hướng vòng tránh vật cản đang dùng (1 / -1), giữ cố định để không lắc qua lại
+  via: { x: number; z: number }[]; // các điểm phải đi qua trước (bậc thềm, cửa nhà ăn)
+}
+
+// Leo lên chỗ cao hơn 30cm thì phải đi bậc thềm; bước xuống thì chỗ nào cũng được
+const MAX_STEP_UP = 0.3;
+const DOOR_Z = (DINING.doorZ[0] + DINING.doorZ[1]) / 2;
+const insideDining = (x: number, z: number) => x > DINING.minX && x < DINING.maxX && z > DINING.minZ && z < DINING.maxZ;
+const onTerrace = (x: number, z: number) => Math.abs(x) <= 11 && z >= -20 && z <= -4;
+
+// Lộ trình tự đi: ra/vào nhà ăn qua cửa, lên nền chính điện qua bậc thềm
+function planRoute(fromX: number, fromZ: number, toX: number, toZ: number) {
+  const via: { x: number; z: number }[] = [];
+  let x = fromX;
+  let z = fromZ;
+  if (insideDining(x, z) && !insideDining(toX, toZ)) {
+    via.push({ x: DINING.minX + 1.2, z: DOOR_Z }, { x: DINING.minX - 1.2, z: DOOR_Z });
+    x = DINING.minX - 1.2;
+    z = DOOR_Z;
+  }
+  // Đang trong chính điện mà đi ra ngoài: ra hiên trước rồi mới đi tiếp (tránh vách hông)
+  if (onTerrace(x, z) && !onTerrace(toX, toZ) && Math.abs(x) < 9.5 && z < -5) {
+    via.push({ x: Math.max(-8, Math.min(8, x)), z: -3.2 });
+    x = Math.max(-8, Math.min(8, x));
+    z = -3.2;
+  }
+  if (onTerrace(toX, toZ) && !onTerrace(x, z)) {
+    const sx = Math.max(-2.5, Math.min(2.5, toX));
+    via.push({ x: sx, z: -1.2 }, { x: sx, z: -4.6 });
+  }
+  if (insideDining(toX, toZ) && !insideDining(x, z)) {
+    via.push({ x: DINING.minX - 1.2, z: DOOR_Z }, { x: DINING.minX + 1.2, z: DOOR_Z });
+  }
+  return via;
 }
 
 export default function App() {
@@ -49,8 +85,19 @@ export default function App() {
   // Trạng thái giao diện
   const [hasEntered, setHasEntered] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<{ id: string; name: string; count: number; max: number; theme?: string }>({ id: 'tu-bi', name: 'Từ Bi', count: 1, max: 50 });
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardData>({ all: [], weekly: [], winners: [], week: '' });
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  // Đổi công đức
+  const [profile, setProfile] = useState<MeritProfile>({ merit: 0, spent: 0, balance: 0, owned: [], equipped: [] });
+  const [communal, setCommunal] = useState<CommunalState>({ current: COMMUNAL_PROJECTS[0].id, progress: {}, built: [] });
+  const [shopTab, setShopTab] = useState<'items' | 'communal' | 'unlock' | null>(null);
+  // Đứng gần đống lá -> hiện nhắc "nhấn F để quét"
+  const [nearLeaf, setNearLeaf] = useState(false);
+  const nearLeafRef = useRef(false);
+  const triggerActionRef = useRef<(type: ActionType) => void>(() => {});
+  // Phụ bếp: đang bưng mâm cơm, danh sách mâm trên bàn
+  const carryingRef = useRef(false);
+  const traysRef = useRef<TrayItem[]>([]);
   const [roomList, setRoomList] = useState<RoomInfo[]>([]);
   const [overallStats, setOverallStats] = useState<OverallStats>({
     totalVisits: 156,
@@ -120,6 +167,24 @@ export default function App() {
 
   // Tải danh sách phòng ban đầu & phát hiện thiết bị cảm ứng
   useEffect(() => {
+    // Công trình đã xây + bia công đức hiện ngay cả ở màn hình chờ
+    fetch('/api/shop')
+      .then(res => res.json())
+      .then(data => {
+        if (!data?.communal) return;
+        setCommunal(data.communal);
+        worldRef.current?.setBuiltProjects(data.communal.built, false);
+      })
+      .catch(() => {});
+    fetch('/api/leaderboard')
+      .then(res => res.json())
+      .then((data: LeaderboardData) => {
+        if (!data?.all) return;
+        setLeaderboard(data);
+        updateSteleFrom(data);
+      })
+      .catch(() => {});
+
     fetch('/api/rooms')
       .then(res => res.json())
       .then(data => {
@@ -189,8 +254,27 @@ export default function App() {
       }
       updateOnlinePlayers();
     };
-    network.onLeaderboard = (list) => setLeaderboard(list);
+    network.onLeaderboard = (data) => {
+      setLeaderboard(data);
+      updateSteleFrom(data);
+    };
+    network.onProfile = (p) => setProfile(p);
+    network.onCommunal = (state) => {
+      setCommunal(prev => {
+        const newly = state.built.filter(id => !prev.built.includes(id));
+        for (const id of newly) {
+          const proj = COMMUNAL_PROJECTS.find(p => p.id === id);
+          if (proj) showToast(`🎉 ${proj.icon} ${proj.name} đã được xây xong!`);
+        }
+        return state;
+      });
+      worldRef.current?.setBuiltProjects(state.built, true);
+    };
     network.onLeafAdded = (leaf) => worldRef.current?.addLeafPile(leaf, true);
+    network.onTrays = (trays) => {
+      traysRef.current = trays;
+      worldRef.current?.syncTrays(trays);
+    };
     // Lá biến mất sau khi chổi quét được vài nhịp
     network.onLeafRemoved = ({ id }) => worldRef.current?.removeLeafPile(id, 1700);
 
@@ -252,8 +336,15 @@ export default function App() {
     if (isSelf) {
       avatar.onActionFinished = (anim) => {
         if (avatar.currentAnim !== anim) return;
-        avatar.currentAnim = 'idle';
-        setCurrentAnim('idle');
+        if (anim === 'pickup' && carryingRef.current) {
+          // Bê mâm xong: bưng mâm đi tới chỗ trống trên bàn ăn
+          avatar.currentAnim = 'carry';
+          setCurrentAnim('carry');
+          triggerActionRef.current('pickup');
+          return;
+        }
+        avatar.currentAnim = carryingRef.current ? 'carry' : 'idle';
+        setCurrentAnim(avatar.currentAnim);
       };
     }
     sceneRef.current?.add(avatar.group);
@@ -279,6 +370,17 @@ export default function App() {
   };
 
   // Lưu hồ sơ mới: gửi lên server, đổi nhân vật của mình ngay lập tức
+  useEffect(() => {
+    const self = selfAvatarRef.current;
+    if (!self) return;
+    const now = [...profile.equipped].sort().join(',');
+    const was = [...(self.data.items || [])].sort().join(',');
+    if (now !== was) {
+      selfAvatarRef.current = rebuildAvatar(self, { items: profile.equipped });
+      updateOnlinePlayers();
+    }
+  }, [profile.equipped]);
+
   const handleSaveProfile = async (data: { name: string; robe: RobeColor; style: AvatarStyle }) => {
     const res = await network.updateProfile(data);
     if (res.error) return res.error;
@@ -292,6 +394,24 @@ export default function App() {
     updateOnlinePlayers();
     showToast(`Đã cập nhật hồ sơ: ${data.name} 🙏`);
     return null;
+  };
+
+  // Khắc tên người đứng đầu các tuần lên bia công đức trong sân chùa
+  const updateSteleFrom = (data: LeaderboardData) => {
+    const leader = data.weekly[0] ? { name: data.weekly[0].name, merit: data.weekly[0].merit } : null;
+    worldRef.current?.updateStele(data.winners, leader);
+  };
+
+  // Gọi API đổi công đức, cập nhật hồ sơ; trả về thông báo lỗi (nếu có)
+  const shopAction = async (call: Promise<{ ok?: boolean; error?: string; profile?: MeritProfile }>) => {
+    const res = await call;
+    if (res.profile) setProfile(res.profile);
+    return res.error || null;
+  };
+
+  const handleEquipSelf = async (itemId: string, on: boolean) => {
+    const err = await shopAction(network.equipItem(itemId, on));
+    return err;
   };
 
   const updateOnlinePlayers = () => {
@@ -403,6 +523,15 @@ export default function App() {
       if (selfAvatarRef.current) {
         handlePlayerMovement(delta, elapsed);
         selfAvatarRef.current.update(delta, elapsed);
+
+        const sp = selfAvatarRef.current.group.position;
+        world.updateInterior(sp.x, sp.z);
+        const pile = world.getNearestLeafPile(sp.x, sp.z);
+        const near = !!pile && Math.hypot(pile.x - sp.x, pile.z - sp.z) < 3 && selfAvatarRef.current.currentAnim !== 'sweep';
+        if (near !== nearLeafRef.current) {
+          nearLeafRef.current = near;
+          setNearLeaf(near);
+        }
       } else {
         // Camera quay chậm ngắm cảnh chùa ban đầu
         cameraAngle.current.theta += delta * 0.1;
@@ -448,7 +577,9 @@ export default function App() {
 
   // Bắt đầu tự đi tới một vị trí (bấm hành động hoặc chạm mặt đất)
   const startAutoWalk = (x: number, z: number, ry: number, anim: ActionType, text?: string) => {
-    autoWalkTarget.current = { x, z, ry, anim, text, walkTime: 0, bestDist: Infinity, stuckTime: 0, turnSign: 0 };
+    const from = selfAvatarRef.current?.group.position;
+    const via = from ? planRoute(from.x, from.z, x, z) : [];
+    autoWalkTarget.current = { x, z, ry, anim, text, walkTime: 0, bestDist: Infinity, stuckTime: 0, turnSign: 0, via };
     setIsNavigating(true);
     if (destinationMarkerRef.current) {
       destinationMarkerRef.current.position.set(x, (worldRef.current?.getGroundHeight(x, z) || 0) + 0.05, z);
@@ -479,11 +610,20 @@ export default function App() {
       setIsNavigating(false);
     }
 
+    // Tới điểm đi qua (bậc thềm, cửa) thì chuyển sang điểm tiếp theo
+    const wp = autoWalkTarget.current?.via[0];
+    if (wp && Math.hypot(wp.x - pos.x, wp.z - pos.z) < 0.45) {
+      autoWalkTarget.current!.via.shift();
+      autoWalkTarget.current!.bestDist = Infinity;
+      autoWalkTarget.current!.stuckTime = 0;
+    }
+
     if (autoWalkTarget.current) {
       const target = autoWalkTarget.current;
-      const dx = target.x - pos.x;
-      const dz = target.z - pos.z;
-      const dist = Math.hypot(dx, dz);
+      const goal = target.via[0] || target;
+      const dx = goal.x - pos.x;
+      const dz = goal.z - pos.z;
+      const dist = target.via.length ? Math.max(0.31, Math.hypot(dx, dz)) : Math.hypot(dx, dz);
 
       target.walkTime += delta;
       if (dist < target.bestDist - 0.05) {
@@ -554,9 +694,12 @@ export default function App() {
     const speed = (isRunning ? 5.2 : 3.0) * delta;
 
     if (Math.hypot(moveX, moveZ) > 0.05) {
+      const groundNow = world.getGroundHeight(pos.x, pos.z);
       const tryMove = (mx: number, mz: number) => {
         const col = world.checkCollision(pos.x + mx, pos.z + mz);
         if (!col.allowed) return false;
+        // Không leo thẳng lên mép cao (nền chính điện cao 0.9m): phải đi bậc thềm
+        if (world.getGroundHeight(pos.x + mx, pos.z + mz) - groundNow > MAX_STEP_UP) return false;
         pos.x += mx;
         pos.z += mz;
         return true;
@@ -600,14 +743,14 @@ export default function App() {
       while (diffRy < -Math.PI) diffRy += Math.PI * 2;
       avatar.group.rotation.y += diffRy * Math.min(1, delta * 15);
 
-      const anim = isRunning ? 'run' : 'walk';
+      const anim: ActionType = carryingRef.current ? 'carry' : isRunning ? 'run' : 'walk';
       if (avatar.currentAnim !== anim) {
         avatar.currentAnim = anim;
         setCurrentAnim(anim);
       }
     } else if (!autoWalkTarget.current && ['walk', 'run'].includes(avatar.currentAnim)) {
-      avatar.currentAnim = 'idle';
-      setCurrentAnim('idle');
+      avatar.currentAnim = carryingRef.current ? 'carry' : 'idle';
+      setCurrentAnim(avatar.currentAnim);
     }
 
     // Độ cao theo nền (bậc thềm chính điện, lầu chuông)
@@ -649,6 +792,7 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
       keysPressed.current[e.code] = true;
+      if (e.code === 'KeyF' && nearLeafRef.current && !e.repeat) triggerActionRef.current('sweep');
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       keysPressed.current[e.code] = false;
@@ -880,10 +1024,20 @@ export default function App() {
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
         worldRef.current?.syncLeafPiles(res.leaves || []);
+        traysRef.current = res.trays || [];
+        worldRef.current?.syncTrays(traysRef.current);
       }
 
       setMerit(res.self.merit || 0);
-      setLeaderboard(res.leaderboard || []);
+      if (res.leaderboard) {
+        setLeaderboard(res.leaderboard);
+        updateSteleFrom(res.leaderboard);
+      }
+      if (res.profile) setProfile(res.profile);
+      if (res.communal) {
+        setCommunal(res.communal);
+        worldRef.current?.setBuiltProjects(res.communal.built, false);
+      }
       applyRoomTheme(res.room.theme);
       setCurrentRoom({
         id: res.room.id,
@@ -924,6 +1078,10 @@ export default function App() {
   };
 
   const handleTriggerAction = (type: ActionType) => {
+    if (type === 'sweep') {
+      nearLeafRef.current = false;
+      setNearLeaf(false);
+    }
     sound.playClick();
     const self = selfAvatarRef.current;
     if (!self) return;
@@ -954,8 +1112,23 @@ export default function App() {
         break;
       case 'drum':
         // Đứng trước mặt trống
-        spot = { x: 18, z: 9.75, ry: Math.PI };
+        spot = { x: 18, z: 9.35, ry: Math.PI };
         break;
+      case 'pickup': {
+        const world = worldRef.current;
+        if (!world) return;
+        if (carryingRef.current) {
+          // Đang bưng mâm: mang tới chỗ trống gần nhất trên bàn ăn
+          const slot = world.pickTraySlot(self.group.position.x, self.group.position.z, traysRef.current);
+          const s = traySlot(slot).spot;
+          startAutoWalk(s.x, s.z, s.ry, 'serve', String(slot));
+        } else {
+          // Vào bếp trai đường bê mâm cơm
+          const k = DINING.kitchenSpot;
+          startAutoWalk(k.x, k.z, k.ry, 'pickup');
+        }
+        return;
+      }
       case 'sweep': {
         // Đi tới đống lá gần nhất, đứng cách 0.75m quay mặt về đống lá
         const world = worldRef.current;
@@ -1005,11 +1178,15 @@ export default function App() {
       return;
     }
 
+    // Làm việc khác thì đặt mâm đang bưng lại
+    if (!['pickup', 'serve', 'carry'].includes(type)) carryingRef.current = false;
     if (avatar.currentAnim === type) avatar.restartAnim();
     avatar.currentAnim = type;
     setCurrentAnim(type);
 
     const res = await network.sendAction(type, text);
+    if (type === 'pickup') carryingRef.current = !res?.error;
+    if (type === 'serve') carryingRef.current = false;
     if (res?.error) {
       showToast(res.error);
       // Bị từ chối (ví dụ chuông vừa được thỉnh) thì dừng động tác
@@ -1019,6 +1196,8 @@ export default function App() {
       }
     }
   };
+
+  triggerActionRef.current = handleTriggerAction;
 
   const handleSwitchRoom = async (targetRoomId: string) => {
     try {
@@ -1037,7 +1216,10 @@ export default function App() {
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
         worldRef.current?.syncLeafPiles(res.leaves || []);
+        traysRef.current = res.trays || [];
+        worldRef.current?.syncTrays(traysRef.current);
       }
+      carryingRef.current = false;
 
       applyRoomTheme(res.room.theme);
       setCurrentRoom({
@@ -1139,10 +1321,37 @@ export default function App() {
             </button>
           </div>
 
+          {/* Thanh tiến độ cúng dường chung: mọi người cùng thấy */}
+          {(() => {
+            const proj = COMMUNAL_PROJECTS.find(p => p.id === communal.current);
+            if (!proj) return null;
+            const done = communal.progress[proj.id] || 0;
+            return (
+              <button
+                type="button"
+                onClick={() => setShopTab('communal')}
+                className="fixed top-[64px] sm:top-[72px] left-3 sm:left-4 z-20 w-[170px] sm:w-[200px] px-2.5 py-1.5 rounded-xl bg-stone-900/85 border border-amber-600/30 shadow-lg text-left cursor-pointer mt-[env(safe-area-inset-top)]"
+                title="Cúng dường chung"
+              >
+                <div className="flex justify-between text-[10px] text-amber-200">
+                  <span className="truncate">{proj.icon} {proj.name}</span>
+                  <span className="text-stone-400 ml-1">{done}/{proj.goal}</span>
+                </div>
+                <div className="mt-1 h-1.5 rounded-full bg-stone-800 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-amber-500 to-orange-500" style={{ width: `${Math.min(100, (done / proj.goal) * 100)}%` }} />
+                </div>
+              </button>
+            );
+          })()}
+
           {/* TOP RIGHT: Công Đức, Nhạc, Ngày/Đêm, Toàn màn hình */}
-          <div className="fixed top-3 sm:top-4 right-3 sm:right-4 z-20 flex items-center gap-1.5 sm:gap-2 pt-[env(safe-area-inset-top)]">
+          <div className="fixed top-3 sm:top-4 right-3 sm:right-4 z-20 flex flex-wrap justify-end items-center gap-1 sm:gap-2 max-w-[56vw] sm:max-w-none pt-[env(safe-area-inset-top)]">
             {/* Điểm công đức */}
-            <div className="relative flex items-center gap-1 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-2xl bg-stone-900/90 border border-amber-600/40 shadow-xl backdrop-blur-xs text-amber-300 font-serif text-xs font-bold">
+            <div
+              onClick={() => setShopTab('items')}
+              title={`Công đức tích luỹ ${merit} · khả dụng ${profile.balance}`}
+              className="relative flex items-center gap-1 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-2xl bg-stone-900/90 border border-amber-600/40 shadow-xl backdrop-blur-xs text-amber-300 font-serif text-xs font-bold cursor-pointer"
+            >
               <Sparkles size={13} className="text-amber-400" />
               <span>{merit}</span>
 
@@ -1156,11 +1365,21 @@ export default function App() {
               ))}
             </div>
 
+            {/* Đổi công đức */}
+            <button
+              type="button"
+              onClick={() => setShopTab('items')}
+              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              title="Đổi công đức"
+            >
+              <Gift size={15} />
+            </button>
+
             {/* Bảng công đức */}
             <button
               type="button"
               onClick={() => setShowLeaderboard(true)}
-              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
               title="Bảng công đức"
             >
               <Trophy size={15} />
@@ -1170,7 +1389,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowProfileModal(true)}
-              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
               title="Đổi tên, màu áo"
             >
               <UserPen size={15} />
@@ -1180,7 +1399,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowAudioModal(true)}
-              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
               title="Cài đặt âm thanh"
             >
               <Music size={15} />
@@ -1190,7 +1409,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsNight(!isNight)}
-              className="p-2 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
               title={isNight ? 'Chuyển sang ban ngày' : 'Chuyển sang ban đêm'}
             >
               {isNight ? <Sun size={15} /> : <Moon size={15} />}
@@ -1220,7 +1439,25 @@ export default function App() {
             onSendMessage={(txt) => network.sendChat(txt)}
           />
 
-          {/* BOTTOM CENTER: Thanh 10 Hành Động với kích thước tối thiểu 56px */}
+          {/* Đứng gần lá rụng: nhắc nhấn F (máy tính) hoặc nút chạm (điện thoại) */}
+          {nearLeaf && !isNavigating && (
+            <button
+              type="button"
+              onClick={() => handleTriggerAction('sweep')}
+              className="fixed bottom-[96px] sm:bottom-[104px] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 rounded-full bg-stone-900/95 border border-amber-500/60 shadow-2xl text-amber-200 text-sm font-semibold cursor-pointer animate-bounce"
+            >
+              <span>🍂</span>
+              {isTouchDevice ? (
+                <span>Chạm để quét lá (+2)</span>
+              ) : (
+                <span>
+                  Nhấn <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-amber-500 text-stone-950 font-bold">F</kbd> để quét lá (+2)
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* BOTTOM CENTER: Thanh hành động */}
           <ActionBar
             currentAnim={currentAnim}
             isNavigatingToTarget={isNavigating}
@@ -1242,14 +1479,27 @@ export default function App() {
           playersInRoom={onlinePlayersList}
           onClose={() => setShowRoomModal(false)}
           onSwitchRoom={handleSwitchRoom}
-          onCreateRoom={(name) => network.createRoom(name)}
+          onCreateRoom={(name, theme) => network.createRoom(name, theme)}
+          canPickTheme={profile.owned.includes('room_theme')}
         />
       )}
 
       {/* MODAL CÀI ĐẶT THANH ÂM */}
+      {shopTab && (
+        <ShopModal
+          profile={profile}
+          communal={communal}
+          initialTab={shopTab}
+          onClose={() => setShopTab(null)}
+          onBuy={(id) => shopAction(network.buyItem(id))}
+          onEquip={handleEquipSelf}
+          onDonate={(amount) => shopAction(network.donate(amount))}
+        />
+      )}
+
       {showLeaderboard && (
         <LeaderboardModal
-          entries={leaderboard}
+          data={leaderboard}
           roomPlayers={onlinePlayersList}
           selfName={selfAvatarRef.current?.data.name || ''}
           selfMerit={merit}
@@ -1269,7 +1519,14 @@ export default function App() {
       )}
 
       {showAudioModal && (
-        <AudioSettingsModal onClose={() => setShowAudioModal(false)} />
+        <AudioSettingsModal
+          owned={profile.owned}
+          onOpenShop={() => {
+            setShowAudioModal(false);
+            setShopTab('unlock');
+          }}
+          onClose={() => setShowAudioModal(false)}
+        />
       )}
 
       {/* MODAL THẢ ĐÈN HOA ĐĂNG & CHIÊM BÁI LỜI NGUYỆN */}
