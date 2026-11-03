@@ -264,3 +264,92 @@ export function createBonsaiPotTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
+
+// Cỏ xanh có nhiễu màu tự nhiên (lặp lại trên nền đất rộng)
+export function getGrassTexture(): THREE.CanvasTexture {
+  if (textureCache.has('grass')) return textureCache.get('grass')!;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#5f8a3e';
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Mảng màu loang lớn
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const r = 30 + Math.random() * 70;
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const tone = Math.random() < 0.5 ? '120, 160, 70' : '70, 110, 45';
+    grad.addColorStop(0, `rgba(${tone}, 0.35)`);
+    grad.addColorStop(1, `rgba(${tone}, 0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  // Ngọn cỏ nhỏ
+  for (let i = 0; i < 9000; i++) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const g = 100 + Math.random() * 90;
+    ctx.fillStyle = `rgba(${g * 0.55}, ${g}, ${g * 0.35}, 0.55)`;
+    ctx.fillRect(x, y, 1.2, 2 + Math.random() * 3);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(90, 90);
+  texture.anisotropy = 8;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  textureCache.set('grass', texture);
+  return texture;
+}
+
+// Hào quang tròn: vàng ấm ở tâm, tia sáng mờ dần ra ngoài
+export function createHaloTexture(): THREE.CanvasTexture {
+  if (textureCache.has('halo')) return textureCache.get('halo')!;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+  const c = 256;
+
+  const glow = ctx.createRadialGradient(c, c, 0, c, c, 250);
+  glow.addColorStop(0, 'rgba(255, 244, 200, 1)');
+  glow.addColorStop(0.45, 'rgba(255, 210, 110, 0.75)');
+  glow.addColorStop(0.8, 'rgba(255, 170, 60, 0.25)');
+  glow.addColorStop(1, 'rgba(255, 160, 40, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Tia hào quang
+  ctx.translate(c, c);
+  for (let i = 0; i < 48; i++) {
+    ctx.rotate((Math.PI * 2) / 48);
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255, 236, 170, 0.22)' : 'rgba(255, 210, 120, 0.12)';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-7, 245);
+    ctx.lineTo(7, 245);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Vòng tròn viền
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.strokeStyle = 'rgba(255, 220, 130, 0.9)';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(c, c, 150, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  textureCache.set('halo', texture);
+  return texture;
+}
