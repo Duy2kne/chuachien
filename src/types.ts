@@ -15,6 +15,9 @@ export type ActionType =
   | 'drum'         // Đánh trống
   | 'lantern'      // Thả đèn hoa đăng
   | 'sweep'        // Quét lá đa
+  | 'pickup'       // Phụ bếp: bê mâm cơm ở bếp
+  | 'carry'        // Đang bưng mâm cơm
+  | 'serve'        // Đặt mâm cơm lên bàn trai đường
   | 'wave';        // Vẫy chào
 
 export interface PlayerData {
@@ -29,6 +32,7 @@ export interface PlayerData {
   z: number;
   ry: number;
   anim: ActionType;
+  items?: string[];   // vật phẩm đang mang (nón lá, hào quang...)
   actionText?: string;
   currentAction?: string;
 }
@@ -49,6 +53,16 @@ export interface LeafPile {
   z: number;
   seed: number;
   createdAt: number;
+}
+
+export type { MeritProfile, CommunalState, WeeklyWinner } from './shared/merit.js';
+
+// Bảng xếp hạng: toàn thời gian, tuần này, và danh sách người được khắc tên trên bia
+export interface LeaderboardData {
+  all: LeaderboardEntry[];
+  weekly: LeaderboardEntry[];
+  winners: import('./shared/merit.js').WeeklyWinner[];
+  week: string;
 }
 
 // Một dòng trong bảng Top công đức
@@ -105,5 +119,6 @@ export interface OverallStats {
   flowerCount: number;
   drumCount: number;
   sweepCount?: number;
+  servedCount?: number;
   totalMerit?: number;
 }
