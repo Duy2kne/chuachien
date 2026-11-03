@@ -7,7 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, RobeColor } from './src/types.js';
+import { SHOP_ITEMS, COMMUNAL_PROJECTS, getShopItem, weekKey, type CommunalState, type MeritProfile, type WeeklyWinner } from './src/shared/merit.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,12 +54,36 @@ function saveStats() {
 // ===================== CÔNG ĐỨC (lưu ở server theo mã người dùng) =====================
 // Mỗi trình duyệt có 1 mã ngẫu nhiên (uid) lưu trong localStorage; công đức gắn với mã này.
 const MERIT_FILE = path.join(__dirname, 'data', 'merit.json');
-interface MeritRecord { name: string; merit: number; robe: RobeColor; updatedAt: number }
+interface MeritRecord {
+  name: string;
+  merit: number;        // công đức tích luỹ (xếp hạng, danh hiệu)
+  robe: RobeColor;
+  updatedAt: number;
+  spent?: number;       // đã dùng để đổi vật phẩm / cúng dường
+  owned?: string[];
+  equipped?: string[];
+}
 const meritStore = new Map<string, MeritRecord>();
+// Công đức trong tuần hiện tại (reset mỗi thứ Hai, giờ Việt Nam)
+let currentWeek = weekKey();
+const weeklyStore = new Map<string, { name: string; merit: number; robe: RobeColor }>();
+// Người đứng đầu các tuần trước: được khắc tên lên bia công đức
+let weeklyWinners: WeeklyWinner[] = [];
+// Cúng dường chung: cả chùa góp công đức xây công trình mới
+let communal: CommunalState = { current: COMMUNAL_PROJECTS[0].id, progress: {}, built: [] };
+
 try {
   if (fs.existsSync(MERIT_FILE)) {
-    const raw = JSON.parse(fs.readFileSync(MERIT_FILE, 'utf-8')) as Record<string, MeritRecord>;
-    for (const [uid, rec] of Object.entries(raw)) meritStore.set(uid, rec);
+    const raw = JSON.parse(fs.readFileSync(MERIT_FILE, 'utf-8'));
+    // Định dạng cũ: { uid: record }; định dạng mới: { version: 2, players, weekly, ... }
+    const playersRaw: Record<string, MeritRecord> = raw.version === 2 ? raw.players : raw;
+    for (const [uid, rec] of Object.entries(playersRaw)) meritStore.set(uid, rec);
+    if (raw.version === 2) {
+      currentWeek = raw.week || currentWeek;
+      for (const [uid, rec] of Object.entries(raw.weekly || {})) weeklyStore.set(uid, rec as any);
+      weeklyWinners = raw.winners || [];
+      communal = { ...communal, ...(raw.communal || {}) };
+    }
   }
 } catch (err) {
   console.warn('Không thể đọc data/merit.json:', err);
@@ -70,11 +95,32 @@ function saveMerit() {
   try {
     const dir = path.dirname(MERIT_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(MERIT_FILE, JSON.stringify(Object.fromEntries(meritStore)), 'utf-8');
+    fs.writeFileSync(MERIT_FILE, JSON.stringify({
+      version: 2,
+      players: Object.fromEntries(meritStore),
+      week: currentWeek,
+      weekly: Object.fromEntries(weeklyStore),
+      winners: weeklyWinners,
+      communal
+    }), 'utf-8');
     meritDirty = false;
   } catch (err) {
     console.error('Lỗi lưu data/merit.json:', err);
   }
+}
+
+// Cập nhật bản ghi công đức (giữ nguyên số đã dùng, vật phẩm)
+function touchRecord(uid: string, patch: Partial<MeritRecord>) {
+  const old = meritStore.get(uid);
+  meritStore.set(uid, { name: '', merit: 0, robe: 'brown', ...old, ...patch, updatedAt: Date.now() });
+  meritDirty = true;
+}
+
+function getProfile(uid: string): MeritProfile {
+  const r = meritStore.get(uid);
+  const merit = r?.merit || 0;
+  const spent = r?.spent || 0;
+  return { merit, spent, balance: Math.max(0, merit - spent), owned: r?.owned || [], equipped: r?.equipped || [] };
 }
 
 // Lưu stats + công đức định kỳ mỗi 60 giây
@@ -175,14 +221,46 @@ app.use(helmet({
 app.use(compression());
 app.use(express.json({ limit: '100kb' }));
 
-// Top công đức toàn chùa
-function getLeaderboard(limit = 20): LeaderboardEntry[] {
+// Sang tuần mới: người đứng đầu tuần cũ được khắc tên lên bia, bảng tuần reset
+function checkWeekRollover() {
+  const now = weekKey();
+  if (now === currentWeek) return;
+  const top = Array.from(weeklyStore.values()).sort((a, b) => b.merit - a.merit)[0];
+  if (top && top.merit > 0) {
+    weeklyWinners = [{ week: currentWeek, name: top.name, merit: top.merit }, ...weeklyWinners].slice(0, 12);
+    io.emit('chat:message', {
+      id: `sys-week-${Date.now()}`,
+      playerId: 'system',
+      playerName: 'Chùa',
+      text: `🏆 ${top.name} đứng đầu công đức tuần qua (${top.merit}) và được khắc tên lên bia công đức 🙏`,
+      time: Date.now(),
+      isSystem: true
+    } as ChatMessage);
+  }
+  currentWeek = now;
+  weeklyStore.clear();
+  meritDirty = true;
+  scheduleLeaderboardBroadcast();
+}
+setInterval(checkWeekRollover, 60000);
+
+function rank(entries: [string, { name: string; merit: number; robe: RobeColor }][], limit: number): LeaderboardEntry[] {
   const onlineUids = new Set(Array.from(players.values()).map(p => p.uid));
-  return Array.from(meritStore.entries())
+  return entries
     .filter(([, r]) => r.merit > 0)
     .sort((a, b) => b[1].merit - a[1].merit)
     .slice(0, limit)
     .map(([uid, r]) => ({ name: r.name, merit: r.merit, robe: r.robe, online: onlineUids.has(uid) }));
+}
+
+// Top công đức toàn chùa + tuần này + bia công đức
+function getLeaderboard(limit = 20): LeaderboardData {
+  return {
+    all: rank(Array.from(meritStore.entries()), limit),
+    weekly: rank(Array.from(weeklyStore.entries()), limit),
+    winners: weeklyWinners,
+    week: currentWeek
+  };
 }
 
 let leaderboardTimer: NodeJS.Timeout | null = null;
@@ -194,19 +272,21 @@ function scheduleLeaderboardBroadcast() {
   }, 2000);
 }
 
+function sendProfile(session: PlayerSession) {
+  session.socket.emit('profile:self', getProfile(session.uid));
+}
+
 // Cộng công đức (nguồn sự thật duy nhất là server)
 function addMerit(session: PlayerSession, gain: number) {
   if (gain <= 0) return;
+  checkWeekRollover();
   session.data.merit += gain;
   stats.totalMerit = (stats.totalMerit || 0) + gain;
-  meritStore.set(session.uid, {
-    name: session.data.name,
-    merit: session.data.merit,
-    robe: session.data.robe,
-    updatedAt: Date.now()
-  });
-  meritDirty = true;
+  touchRecord(session.uid, { name: session.data.name, merit: session.data.merit, robe: session.data.robe });
+  const week = weeklyStore.get(session.uid);
+  weeklyStore.set(session.uid, { name: session.data.name, robe: session.data.robe, merit: (week?.merit || 0) + gain });
   io.to(session.room).emit('merit:update', { id: session.data.id, merit: session.data.merit, gain });
+  sendProfile(session);
   scheduleLeaderboardBroadcast();
 }
 
@@ -221,7 +301,8 @@ const LEAF_BLOCKERS: [number, number, number][] = [
   [-3.8, 0, 1], [3.8, 0, 1], [-3.8, 8, 1], [3.8, 8, 1], [-3.8, 16, 1], [3.8, 16, 1], [-3.8, 24, 1], [3.8, 24, 1],
   [-5.2, -2.5, 1], [5.2, -2.5, 1], [-8.5, 4, 1], [8.5, 4, 1], [-8.5, 16, 1], [8.5, 16, 1], [-8.5, 28, 1], [8.5, 28, 1],
   [-24, 4, 1.3], [-25, -8, 1.3], [-20, -18, 1.3], [24, 4, 1.3], [25, -8, 1.3], [20, -18, 1.3], [24, 14, 1.3], [24, 34, 1.3],
-  [-24, 34, 1.3], [26, 24, 1.3]
+  [-24, 34, 1.3], [26, 24, 1.3],
+  [17, 26, 3.2], [-17, -11, 2.8], [18, -12, 5.2], [-12.5, 33, 1.8] // bảo tháp, tượng Quan Âm, hồ sen 2, bia công đức
 ];
 // Vùng lá có thể rơi: quanh gốc bồ đề, hai bên sân, ven tường cây xanh, lối đi
 const LEAF_ZONES: [number, number, number, number, number][] = [
@@ -307,6 +388,10 @@ app.get('/api/rooms', (_req, res) => {
     stats,
     maxPerRoom: MAX_PER_ROOM
   });
+});
+
+app.get('/api/shop', (_req, res) => {
+  res.json({ items: SHOP_ITEMS, projects: COMMUNAL_PROJECTS, communal });
 });
 
 app.get('/api/leaderboard', (_req, res) => {
@@ -454,7 +539,7 @@ io.on('connection', (socket: Socket) => {
   });
 
   // Sự kiện tạo phòng theo yêu cầu
-  socket.on('room:create', (data: { name?: string }, callback) => {
+  socket.on('room:create', (data: { name?: string; theme?: string; uid?: string }, callback) => {
     const now = Date.now();
     const lastCreation = ipRoomCreations.get(clientIp) || 0;
     if (now - lastCreation < 30000) {
@@ -472,6 +557,9 @@ io.on('connection', (socket: Socket) => {
     }
 
     const cleanedName = cleanText(data?.name || '', 20) || `Tịnh Thất ${rooms.size + 1}`;
+    // Chọn cảnh cho phòng riêng: phải đã đổi vật phẩm "Phòng riêng tự chọn cảnh"
+    const canPickTheme = !!data?.uid && (meritStore.get(data.uid)?.owned || []).includes('room_theme');
+    const roomTheme = canPickTheme && data?.theme && THEMES.includes(data.theme) ? data.theme : randomTheme();
     const newId = `room-${Date.now().toString(36)}`;
     const newRoom: RoomState = {
       id: newId,
@@ -485,7 +573,7 @@ io.on('connection', (socket: Socket) => {
       lastBellTime: 0,
       lastDrumTime: 0,
       leaves: [],
-      theme: randomTheme()
+      theme: roomTheme
     };
 
     rooms.set(newId, newRoom);
@@ -510,6 +598,7 @@ io.on('connection', (socket: Socket) => {
     // Công đức lấy từ server; người cũ chưa có trên server thì nhận tối đa 300 từ máy cũ
     const stored = meritStore.get(uid);
     const merit = stored ? stored.merit : Math.max(0, Math.min(300, Math.floor(Number(data?.merit) || 0)));
+    const items = stored?.equipped || [];
 
     // Lựa chọn phòng
     const room = resolveRoomForJoin(data?.room);
@@ -548,7 +637,8 @@ io.on('connection', (socket: Socket) => {
       y: 0,
       z: spawnZ,
       ry: Math.PI, // Nhìn về phía bắc (Chính điện)
-      anim: 'idle'
+      anim: 'idle',
+      items
     };
 
     room.players.set(socket.id, playerData);
@@ -564,8 +654,7 @@ io.on('connection', (socket: Socket) => {
       meritCooldown: new Map()
     };
     players.set(socket.id, session);
-    meritStore.set(uid, { name, merit, robe, updatedAt: Date.now() });
-    meritDirty = true;
+    touchRecord(uid, { name, merit, robe });
 
     // Cập nhật thống kê
     stats.totalVisits += 1;
@@ -586,6 +675,8 @@ io.on('connection', (socket: Socket) => {
       leaves: room.leaves,
       uid,
       leaderboard: getLeaderboard(),
+      profile: getProfile(uid),
+      communal,
       serverTime: Date.now(),
       wasRedirected,
       stats
@@ -873,11 +964,12 @@ io.on('connection', (socket: Socket) => {
     if (['blue', 'brown', 'orange', 'grey', 'yellow', 'white', 'moss'].includes(data?.robe)) p.robe = data.robe;
     if (['monk', 'lay'].includes(data?.style)) p.style = data.style;
     session.lastProfileTime = now;
-    meritStore.set(session.uid, { name: p.name, merit: p.merit, robe: p.robe, updatedAt: now });
-    meritDirty = true;
+    touchRecord(session.uid, { name: p.name, merit: p.merit, robe: p.robe });
+    const week = weeklyStore.get(session.uid);
+    if (week) week.name = p.name;
     scheduleLeaderboardBroadcast();
 
-    const update = { id: p.id, name: p.name, robe: p.robe, style: p.style };
+    const update = { id: p.id, name: p.name, robe: p.robe, style: p.style, items: p.items || [] };
     socket.to(session.room).emit('player:update', update);
 
     if (oldName !== p.name) {
@@ -891,6 +983,95 @@ io.on('connection', (socket: Socket) => {
       } as ChatMessage);
     }
     if (typeof callback === 'function') callback({ ok: true, self: update });
+  });
+
+  // ===================== ĐỔI CÔNG ĐỨC =====================
+  let lastShopTime = 0;
+  const shopGuard = (callback: any) => {
+    const now = Date.now();
+    if (now - lastShopTime < 400) {
+      if (typeof callback === 'function') callback({ error: 'Xin thong thả 🙏' });
+      return false;
+    }
+    lastShopTime = now;
+    return true;
+  };
+
+  // Vật phẩm đang mang thay đổi -> mọi người trong phòng thấy ngay
+  const broadcastItems = (session: PlayerSession) => {
+    const p = session.data;
+    p.items = getProfile(session.uid).equipped;
+    session.socket.to(session.room).emit('player:update', { id: p.id, name: p.name, robe: p.robe, style: p.style, items: p.items });
+  };
+
+  socket.on('shop:buy', (data: { itemId?: string }, callback) => {
+    const session = players.get(socket.id);
+    if (!session || !shopGuard(callback)) return;
+    const item = getShopItem(String(data?.itemId));
+    const profile = getProfile(session.uid);
+    if (!item) return callback?.({ error: 'Vật phẩm không tồn tại' });
+    if (profile.owned.includes(item.id)) return callback?.({ error: 'Bạn đã có vật phẩm này rồi' });
+    if (profile.balance < item.cost) return callback?.({ error: `Cần ${item.cost} công đức khả dụng, bạn đang có ${profile.balance} 🙏` });
+
+    const owned = [...profile.owned, item.id];
+    const equipped = item.kind === 'wear' ? [...profile.equipped, item.id] : profile.equipped;
+    touchRecord(session.uid, { spent: profile.spent + item.cost, owned, equipped });
+    if (item.kind === 'wear') broadcastItems(session);
+    callback?.({ ok: true, profile: getProfile(session.uid) });
+  });
+
+  socket.on('shop:equip', (data: { itemId?: string; on?: boolean }, callback) => {
+    const session = players.get(socket.id);
+    if (!session || !shopGuard(callback)) return;
+    const item = getShopItem(String(data?.itemId));
+    const profile = getProfile(session.uid);
+    if (!item || item.kind !== 'wear' || !profile.owned.includes(item.id)) return callback?.({ error: 'Không thể mang vật phẩm này' });
+    const equipped = profile.equipped.filter(id => id !== item.id);
+    if (data?.on) equipped.push(item.id);
+    touchRecord(session.uid, { equipped });
+    broadcastItems(session);
+    callback?.({ ok: true, profile: getProfile(session.uid) });
+  });
+
+  socket.on('communal:donate', (data: { amount?: number }, callback) => {
+    const session = players.get(socket.id);
+    if (!session || !shopGuard(callback)) return;
+    const project = COMMUNAL_PROJECTS.find(p => p.id === communal.current);
+    if (!project) return callback?.({ error: 'Các công trình đã được xây xong hết 🙏' });
+    const profile = getProfile(session.uid);
+    const done = communal.progress[project.id] || 0;
+    const amount = Math.min(Math.floor(Number(data?.amount) || 0), profile.balance, project.goal - done);
+    if (amount <= 0) return callback?.({ error: 'Công đức khả dụng không đủ 🙏' });
+
+    touchRecord(session.uid, { spent: profile.spent + amount });
+    communal.progress[project.id] = done + amount;
+    const now = Date.now();
+
+    if (communal.progress[project.id] >= project.goal) {
+      communal.built.push(project.id);
+      const next = COMMUNAL_PROJECTS.find(p => !communal.built.includes(p.id));
+      communal.current = next ? next.id : null;
+      io.emit('chat:message', {
+        id: `sys-built-${now}`,
+        playerId: 'system',
+        playerName: 'Chùa',
+        text: `🎉 Nhờ công đức của mọi người, ${project.name} đã được xây xong! ${session.data.name} góp phần hoàn thành 🙏`,
+        time: now,
+        isSystem: true
+      } as ChatMessage);
+    } else if (amount >= 20) {
+      io.to(session.room).emit('chat:message', {
+        id: `sys-donate-${now}`,
+        playerId: 'system',
+        playerName: 'Chùa',
+        text: `${session.data.name} cúng dường ${amount} công đức xây ${project.name} 🙏`,
+        time: now,
+        isSystem: true
+      } as ChatMessage);
+    }
+    meritDirty = true;
+    io.emit('communal', communal);
+    callback?.({ ok: true, profile: getProfile(session.uid) });
   });
 
   // Chuyển phòng (room:switch)
