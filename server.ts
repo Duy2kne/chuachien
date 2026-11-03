@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
-import { DINING, TRAY_SLOTS, TRAY_TTL_MS, traySlot, type TrayItem } from './src/shared/dining.js';
+import { DINING, TRAY_SLOTS, TRAY_TTL_MS, BUNS_PER_PLATE, KITCHEN_REACH, SERVE_REACH, traySlot, type TrayItem } from './src/shared/dining.js';
 import { SHOP_ITEMS, COMMUNAL_PROJECTS, getShopItem, weekKey, type CommunalState, type MeritProfile, type WeeklyWinner } from './src/shared/merit.js';
 import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
 
@@ -192,7 +192,9 @@ interface PlayerSession {
   lastActionTime: number;
   lastChatTime: number;
   lastProfileTime?: number;
-  carrying?: boolean;   // đang bưng mâm cơm từ bếp
+  carrying?: boolean;   // đang bưng đĩa bánh bao
+  // Đĩa đang bày trên quầy bếp: null = chưa lấy đĩa, 0-3 = số bánh bao đã gắp
+  kitchenPlate?: number | null;
   uid: string;
   meritCooldown: Map<string, number>;
 }
@@ -735,6 +737,8 @@ io.on('connection', (socket: Socket) => {
 
     session.lastActionTime = now;
     const actionType = data.type;
+    // Làm việc khác (không phải phụ bếp) thì coi như đặt đĩa đang bưng lại
+    if (!['take_plate', 'take_bun', 'lift_plate', 'serve'].includes(actionType)) session.carrying = false;
     let meritGain = 0;
     let broadCastText = '';
 
@@ -877,15 +881,30 @@ io.on('connection', (socket: Socket) => {
         session.data.anim = 'wave';
         break;
 
-      case 'pickup': {
-        // Phụ bếp: phải đứng ở quầy bếp trai đường
+      // ===== PHỤ BẾP: lấy đĩa -> lấy 3 bánh bao -> bê đĩa -> đặt xuống bàn =====
+      case 'take_plate':
+      case 'take_bun':
+      case 'lift_plate': {
         const k = DINING.kitchenSpot;
-        if (Math.hypot(session.data.x - k.x, session.data.z - k.z) > 2.5) {
-          if (typeof callback === 'function') callback({ error: 'Hãy vào bếp trai đường để bê mâm cơm 🙏' });
-          return;
+        const fail = (msg: string) => {
+          if (typeof callback === 'function') callback({ error: msg, kitchenPlate: session.kitchenPlate ?? null, carrying: !!session.carrying });
+        };
+        if (Math.hypot(session.data.x - k.x, session.data.z - k.z) > KITCHEN_REACH) return fail('Hãy đứng tại quầy bếp trai đường 🙏');
+        if (session.carrying) return fail('Bạn đang bưng đĩa, hãy mang ra bàn đặt xuống trước 🙏');
+        const plate = session.kitchenPlate ?? null;
+        if (actionType === 'take_plate') {
+          if (plate !== null) return fail('Đĩa đã có trên quầy rồi, hãy lấy bánh bao 🥟');
+          session.kitchenPlate = 0;
+        } else if (actionType === 'take_bun') {
+          if (plate === null) return fail('Hãy lấy đĩa trước 🍽️');
+          if (plate >= BUNS_PER_PLATE) return fail('Đĩa đã đủ 3 bánh bao, hãy bê đĩa 🤲');
+          session.kitchenPlate = plate + 1;
+        } else {
+          if (plate === null || plate < BUNS_PER_PLATE) return fail(`Cần đủ ${BUNS_PER_PLATE} bánh bao trên đĩa mới bê được 🥟`);
+          session.kitchenPlate = null;
+          session.carrying = true;
         }
-        session.carrying = true;
-        session.data.anim = 'pickup';
+        session.data.anim = actionType;
         meritGain = 0;
         break;
       }
@@ -894,12 +913,12 @@ io.on('connection', (socket: Socket) => {
         // Đặt mâm cơm lên bàn: phải đang bưng mâm và đứng cạnh chỗ đặt
         const slot = Math.floor(Number(data.text));
         if (!session.carrying || !(slot >= 0 && slot < TRAY_SLOTS)) {
-          if (typeof callback === 'function') callback({ error: 'Hãy vào bếp bê mâm cơm trước 🙏' });
+          if (typeof callback === 'function') callback({ error: 'Hãy vào bếp bê đĩa bánh bao trước 🙏' });
           return;
         }
         const s = traySlot(slot);
-        if (Math.hypot(session.data.x - s.spot.x, session.data.z - s.spot.z) > 2.5) {
-          if (typeof callback === 'function') callback({ error: 'Hãy đứng sát bàn để đặt mâm 🙏' });
+        if (Math.hypot(session.data.x - s.spot.x, session.data.z - s.spot.z) > SERVE_REACH) {
+          if (typeof callback === 'function') callback({ error: 'Hãy đến sát bàn để đặt đĩa 🙏' });
           return;
         }
         session.carrying = false;
@@ -911,10 +930,10 @@ io.on('connection', (socket: Socket) => {
           createdAt: now
         });
         io.to(room.id).emit('trays', room.trays);
-        meritGain = 3;
+        meritGain = 5;
         stats.servedCount = (stats.servedCount || 0) + 1;
         session.data.anim = 'serve';
-        broadCastText = `${session.data.name} vừa dọn mâm cơm lên bàn trai đường 🍚`;
+        broadCastText = `${session.data.name} vừa dọn đĩa bánh bao lên bàn trai đường 🥟`;
         break;
       }
 
@@ -957,7 +976,7 @@ io.on('connection', (socket: Socket) => {
     });
 
     if (typeof callback === 'function') {
-      callback({ ok: true, meritGain, merit: session.data.merit });
+      callback({ ok: true, meritGain, merit: session.data.merit, kitchenPlate: session.kitchenPlate ?? null, carrying: !!session.carrying });
     }
   });
 
@@ -1148,6 +1167,7 @@ io.on('connection', (socket: Socket) => {
 
     // Vào phòng mới (mâm đang bưng ở phòng cũ coi như đã đặt lại bếp)
     session.carrying = false;
+    session.kitchenPlate = null;
     session.room = targetRoom.id;
     session.data.room = targetRoom.id;
     targetRoom.emptySince = null;
