@@ -20,6 +20,7 @@ const ACTIONS: ActionItem[] = [
   { type: 'drum', label: 'Đánh trống', icon: '🥁', merit: 3 },
   { type: 'lantern', label: 'Hoa đăng', icon: '🏮', merit: 5 },
   { type: 'sweep', label: 'Quét lá', icon: '🧹', merit: 2 },
+  { type: 'pickup', label: 'Phụ bếp', icon: '🍲', merit: 3 },
   { type: 'wave', label: 'Vẫy chào', icon: '👋', merit: 0 }
 ];
 
@@ -68,7 +69,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
           className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 overflow-x-auto no-scrollbar touch-pan-x scroll-smooth"
         >
           {ACTIONS.map((act) => {
-            const isActive = currentAnim === act.type;
+            const isActive = currentAnim === act.type || (act.type === 'pickup' && (currentAnim === 'carry' || currentAnim === 'serve'));
             return (
               <button
                 key={act.type}
