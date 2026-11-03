@@ -1,0 +1,6 @@
+{
+  "name": "Chùa Online 3D - Viếng Chùa Trực Tuyến & Thiền Định Đa Người Chơi",
+  "description": "Không gian chùa Việt Nam 3D trực tuyến nhiều người cùng lúc: chiêm bái, thắp hương, dâng hoa, lạy Phật, thả đèn hoa đăng, thỉnh chuông, gõ mõ và lắng nghe thanh âm thiền tịnh.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

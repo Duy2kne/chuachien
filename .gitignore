@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+public/dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Dữ liệu thống kê chạy thực tế không commit lên Git
+data/*.json
+!data/.gitkeep

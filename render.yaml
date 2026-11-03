@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: chua-online-3d
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: MAX_PER_ROOM
+        value: 50
+      - key: MAX_ROOMS
+        value: 20
+      - key: ROOM_IDLE_MINUTES
+        value: 5
+      - key: CORS_ORIGIN
+        value: "*"

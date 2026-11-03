@@ -1,0 +1,50 @@
+name: CI Kiểm Tra & Xây Dựng
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  test-and-build:
+    name: Kiểm tra cú pháp, build và smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Thiết lập môi trường Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Cài đặt thư viện bằng npm ci
+        run: npm ci
+
+      - name: Kiểm tra lỗi TypeScript & cú pháp build
+        run: npm run check
+
+      - name: Đóng gói ứng dụng (Build Production)
+        run: npm run build
+
+      - name: Chạy thử nghiệm khói (Smoke Test Server & Health Check)
+        run: |
+          npm start &
+          SERVER_PID=$!
+          echo "Máy chủ đã khởi động với PID: $SERVER_PID"
+          
+          # Đợi server sẵn sàng và gọi health check
+          curl --retry 10 --retry-delay 2 --retry-connrefused -fsS http://localhost:3000/health || (kill -9 $SERVER_PID && exit 1)
+          
+          echo "Health check thành công, đang tắt máy chủ thử nghiệm..."
+          kill -15 $SERVER_PID || true
+
+      - name: Lưu trữ sản phẩm build (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: chua-online-dist
+          path: dist/
+          retention-days: 7

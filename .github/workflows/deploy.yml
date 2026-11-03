@@ -1,0 +1,78 @@
+name: Tự Động Triển Khai (Deploy)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Kiểm Tra Trước Khi Triển Khai
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Thiết lập Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Cài đặt npm ci
+        run: npm ci
+
+      - name: Build ứng dụng
+        run: npm run build
+
+  deploy:
+    name: Triển Khai Lên Máy Chủ
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      # Cách 1: Triển khai lên Render qua Deploy Hook (nếu có secret RENDER_DEPLOY_HOOK_URL)
+      - name: Kích hoạt Deploy Hook trên Render
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          echo "Đang kích hoạt Render Deploy Hook..."
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Render đã nhận tín hiệu deploy thành công."
+
+      # Cách 2: Triển khai lên VPS qua SSH (nếu có secret VPS_HOST)
+      - name: Triển khai lên VPS Ubuntu qua SSH
+        if: env.VPS_HOST != ''
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            cd ${{ secrets.VPS_PATH || '/var/www/chua-online' }}
+            git pull origin main
+            npm ci
+            npm run build
+            npm prune --omit=dev
+            pm2 reload chua-online || pm2 start server.js --name chua-online
+            pm2 save
+
+      # Xác nhận hệ thống sống bằng Health Check
+      - name: Kiểm tra Health Check sau khi triển khai
+        if: env.APP_URL != ''
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          echo "Đang kiểm tra trạng thái tại $APP_URL/health..."
+          sleep 10
+          curl --retry 10 --retry-delay 5 --retry-connrefused -fsS "$APP_URL/health"
+          echo "Chúc mừng! Chùa Online 3D đã sẵn sàng phụng sự đại chúng."

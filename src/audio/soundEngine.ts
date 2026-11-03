@@ -1,0 +1,477 @@
+/**
+ * Web Audio Engine cho Chùa Online 3D
+ * Hoàn toàn procedural, không phụ thuộc file âm thanh ngoài, không vi phạm bản quyền.
+ */
+
+class SoundEngine {
+  private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private musicGain: GainNode | null = null;
+  private sfxGain: GainNode | null = null;
+  private convolver: ConvolverNode | null = null;
+
+  private isMusicPlaying = false;
+  private musicTimer: number | null = null;
+  private droneNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
+
+  // Âm lượng lưu trong localStorage (0.0 -> 1.0)
+  public musicVolume = 0.55;
+  public sfxVolume = 0.8;
+  public isMuted = false;
+
+  constructor() {
+    // Đọc cài đặt đã lưu
+    try {
+      const savedMVol = localStorage.getItem('chua_music_volume');
+      const savedSVol = localStorage.getItem('chua_sfx_volume');
+      const savedMute = localStorage.getItem('chua_is_muted');
+      if (savedMVol !== null) this.musicVolume = parseFloat(savedMVol);
+      if (savedSVol !== null) this.sfxVolume = parseFloat(savedSVol);
+      if (savedMute !== null) this.isMuted = savedMute === 'true';
+    } catch {}
+  }
+
+  public init() {
+    if (this.ctx) return;
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+
+    this.ctx = new AudioCtx();
+
+    // Master
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.gain.value = this.isMuted ? 0 : 1;
+    this.masterGain.connect(this.ctx.destination);
+
+    // Music
+    this.musicGain = this.ctx.createGain();
+    this.musicGain.gain.value = this.musicVolume;
+    this.musicGain.connect(this.masterGain);
+
+    // SFX
+    this.sfxGain = this.ctx.createGain();
+    this.sfxGain.gain.value = this.sfxVolume;
+    this.sfxGain.connect(this.masterGain);
+
+    // Tạo procedural impulse response cho Reverb chánh điện
+    this.convolver = this.createSyntheticReverb(2.8, 2.2);
+  }
+
+  private createSyntheticReverb(seconds: number, decay: number): ConvolverNode | null {
+    if (!this.ctx) return null;
+    const rate = this.ctx.sampleRate;
+    const length = rate * seconds;
+    const impulse = this.ctx.createBuffer(2, length, rate);
+    const left = impulse.getChannelData(0);
+    const right = impulse.getChannelData(1);
+
+    for (let i = 0; i < length; i++) {
+      const n = i / length;
+      const factor = Math.exp(-n * decay);
+      left[i] = (Math.random() * 2 - 1) * factor;
+      right[i] = (Math.random() * 2 - 1) * factor;
+    }
+
+    const conv = this.ctx.createConvolver();
+    conv.buffer = impulse;
+    conv.connect(this.sfxGain!);
+    return conv;
+  }
+
+  public resume() {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  public setMusicVolume(vol: number) {
+    this.musicVolume = Math.max(0, Math.min(1, vol));
+    if (this.musicGain) this.musicGain.gain.value = this.musicVolume;
+    try { localStorage.setItem('chua_music_volume', this.musicVolume.toString()); } catch {}
+  }
+
+  public setSfxVolume(vol: number) {
+    this.sfxVolume = Math.max(0, Math.min(1, vol));
+    if (this.sfxGain) this.sfxGain.gain.value = this.sfxVolume;
+    try { localStorage.setItem('chua_sfx_volume', this.sfxVolume.toString()); } catch {}
+  }
+
+  public toggleMute(): boolean {
+    this.isMuted = !this.isMuted;
+    if (this.masterGain) {
+      this.masterGain.gain.value = this.isMuted ? 0 : 1;
+    }
+    try { localStorage.setItem('chua_is_muted', this.isMuted ? 'true' : 'false'); } catch {}
+    return this.isMuted;
+  }
+
+  // ===================== TIẾNG CHUÔNG ĐẠI HỒNG CHUNG =====================
+  // Chuông đồng lớn có nhiều bồi âm (inharmonic), lệch tần số tạo tiếng ngân "uồm... uồm", ngân dài ~10s
+  public playBigBell(distanceFactor = 1.0) {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const fundamental = 138.59; // Nốt C#3 trầm hùng tráng
+
+    // Ratios bồi âm của chuông đồng cổ điển Việt Nam / Á Đông
+    const partials = [
+      { ratio: 0.5, amp: 0.6, decay: 10.0 }, // Hum tone (âm đáy)
+      { ratio: 1.0, amp: 1.0, decay: 9.0 },  // Strike tone
+      { ratio: 1.48, amp: 0.7, decay: 7.5 },
+      { ratio: 2.06, amp: 0.5, decay: 6.0 },
+      { ratio: 2.78, amp: 0.4, decay: 4.5 },
+      { ratio: 3.85, amp: 0.25, decay: 3.5 },
+      { ratio: 5.12, amp: 0.15, decay: 2.0 }
+    ];
+
+    const bellOutput = this.ctx.createGain();
+    bellOutput.gain.value = Math.max(0.1, Math.min(1, 1 / (distanceFactor || 1)));
+
+    if (this.convolver) {
+      const reverbSend = this.ctx.createGain();
+      reverbSend.gain.value = 0.5;
+      bellOutput.connect(reverbSend);
+      reverbSend.connect(this.convolver);
+    }
+    bellOutput.connect(this.sfxGain);
+
+    for (const p of partials) {
+      // 2 dao động hơi lệch nhau (detuned) để sinh ra nhịp đập ngân vang (beating)
+      for (const detune of [-1.2, 1.2]) {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(fundamental * p.ratio, t);
+        osc.detune.setValueAtTime(detune, t);
+
+        // Vang nở và ngân tắt dần
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(p.amp * 0.15, t + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + p.decay);
+
+        osc.connect(gain);
+        gain.connect(bellOutput);
+
+        osc.start(t);
+        osc.stop(t + p.decay + 0.5);
+      }
+    }
+
+    // Tiếng chạm chày gỗ vào chuông (clapper strike noise click)
+    const strikeOsc = this.ctx.createOscillator();
+    const strikeGain = this.ctx.createGain();
+    strikeOsc.type = 'triangle';
+    strikeOsc.frequency.setValueAtTime(75, t);
+    strikeOsc.frequency.exponentialRampToValueAtTime(30, t + 0.1);
+    strikeGain.gain.setValueAtTime(0.3, t);
+    strikeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+
+    strikeOsc.connect(strikeGain);
+    strikeGain.connect(bellOutput);
+    strikeOsc.start(t);
+    strikeOsc.stop(t + 0.15);
+  }
+
+  // ===================== TIẾNG MÕ GỖ (WOODEN FISH) =====================
+  public playWoodenFish(distanceFactor = 1.0) {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const vol = Math.max(0.05, Math.min(1, 1 / (distanceFactor || 1)));
+
+    // Thân gỗ rỗng cộng hưởng bandpass
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(450, t);
+    filter.Q.setValueAtTime(7.0, t);
+
+    const gain = this.ctx.createGain();
+    gain.gain.value = vol * 0.7;
+
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    // Cao độ tụt nhanh mô phỏng gõ dùi gỗ
+    osc.frequency.setValueAtTime(620, t);
+    osc.frequency.exponentialRampToValueAtTime(260, t + 0.05);
+
+    const oscGain = this.ctx.createGain();
+    oscGain.gain.setValueAtTime(0.8, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+
+    osc.connect(oscGain);
+    oscGain.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.25;
+      gain.connect(rev);
+      rev.connect(this.convolver);
+    }
+
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
+  // ===================== TIẾNG TRỐNG BÁT NHÃ =====================
+  public playDrum(distanceFactor = 1.0) {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const vol = Math.max(0.1, Math.min(1, 1 / (distanceFactor || 1)));
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.2);
+
+    gain.gain.setValueAtTime(0.9 * vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.4;
+      gain.connect(rev);
+      rev.connect(this.convolver);
+    }
+
+    osc.start(t);
+    osc.stop(t + 2.0);
+  }
+
+  // ===================== TIẾNG KHÁNH NHỎ (CHIME) =====================
+  public playChime() {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const osc1 = this.ctx.createOscillator();
+    const osc2 = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(1760, t); // A6
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(3520, t); // A7
+    osc2.detune.setValueAtTime(4, t);
+
+    gain.gain.setValueAtTime(0.2, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(this.sfxGain);
+
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.5;
+      gain.connect(rev);
+      rev.connect(this.convolver);
+    }
+
+    osc1.start(t);
+    osc2.start(t);
+    osc1.stop(t + 2.4);
+    osc2.stop(t + 2.4);
+  }
+
+  // ===================== TIẾNG GIAO DIỆN NHẸ =====================
+  public playClick() {
+    this.init();
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, t);
+    osc.frequency.exponentialRampToValueAtTime(400, t + 0.04);
+
+    gain.gain.setValueAtTime(0.08, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + 0.06);
+  }
+
+  // ===================== NHẠC THIỀN NGŨ CỦNG PROCEDURAL =====================
+  // Thang ngũ cung thiền: D, F, G, A, C (hoặc Hò, Xự, Xang, Xê, Cống)
+  private PENTATONIC_FREQS = [
+    293.66, // D4
+    349.23, // F4
+    392.00, // G4
+    440.00, // A4
+    523.25, // C5
+    587.33, // D5
+    698.46, // F5
+    783.99, // G5
+    880.00  // A5
+  ];
+
+  public startZenMusic() {
+    this.init();
+    this.resume();
+    if (this.isMusicPlaying || !this.ctx || !this.musicGain) return;
+    this.isMusicPlaying = true;
+
+    // 1. Tạo Drone nền thanh tịnh liên tục
+    this.startMeditationDrone();
+
+    // 2. Tạo vòng lặp giai điệu sáo trúc / đàn tranh ngẫu nhiên
+    this.scheduleNextMelodyNote();
+  }
+
+  private startMeditationDrone() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+
+    // D2 (73.42Hz) & A2 (110Hz) & D3 (146.83Hz)
+    const freqs = [73.42, 110.0, 146.83, 220.0];
+
+    for (const f of freqs) {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const filter = this.ctx.createBiquadFilter();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+
+      // Lọc dải trầm ấm áp
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(260, t);
+
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.045, t + 4.0);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.musicGain);
+
+      osc.start(t);
+      this.droneNodes.push({ osc, gain });
+    }
+  }
+
+  private scheduleNextMelodyNote = () => {
+    if (!this.isMusicPlaying || !this.ctx || !this.musicGain) return;
+
+    // Khoảng cách giữa các nốt sáo: 2.5 ~ 6 giây tạo khoảng lặng sâu lắng
+    const delay = 2500 + Math.random() * 3500;
+    this.musicTimer = window.setTimeout(() => {
+      this.playFluteNote();
+      // Thỉnh thoảng gảy nốt đàn tranh (harp/zither pluck)
+      if (Math.random() > 0.6) {
+        window.setTimeout(() => this.playZitherNote(), 600 + Math.random() * 800);
+      }
+      this.scheduleNextMelodyNote();
+    }, delay);
+  };
+
+  // Nốt sáo trúc thiền (với vibrato nhẹ và tiếng hơi)
+  private playFluteNote() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+
+    const freq = this.PENTATONIC_FREQS[Math.floor(Math.random() * this.PENTATONIC_FREQS.length)];
+    const duration = 2.0 + Math.random() * 2.2;
+
+    const osc = this.ctx.createOscillator();
+    const vibrato = this.ctx.createOscillator();
+    const vibratoGain = this.ctx.createGain();
+    const noteGain = this.ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+
+    // Rung (vibrato 5.2Hz)
+    vibrato.frequency.setValueAtTime(5.2, t);
+    vibratoGain.gain.setValueAtTime(2.5, t);
+    vibrato.connect(osc.frequency);
+
+    // Đường bao âm lượng mềm mại
+    noteGain.gain.setValueAtTime(0, t);
+    noteGain.gain.linearRampToValueAtTime(0.08, t + 0.6); // Mở hơi từ từ
+    noteGain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+
+    osc.connect(noteGain);
+    noteGain.connect(this.musicGain);
+
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.4;
+      noteGain.connect(rev);
+      rev.connect(this.convolver);
+    }
+
+    vibrato.start(t);
+    osc.start(t);
+    vibrato.stop(t + duration + 0.2);
+    osc.stop(t + duration + 0.2);
+  }
+
+  // Nốt đàn tranh thánh thót
+  private playZitherNote() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+
+    const freq = this.PENTATONIC_FREQS[Math.floor(Math.random() * this.PENTATONIC_FREQS.length)] * 2;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+
+    // Gảy dây đàn: tiếng công kích nhanh, tắt dần
+    gain.gain.setValueAtTime(0.07, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+
+    osc.connect(gain);
+    gain.connect(this.musicGain);
+
+    if (this.convolver) {
+      const rev = this.ctx.createGain();
+      rev.gain.value = 0.35;
+      gain.connect(rev);
+      rev.connect(this.convolver);
+    }
+
+    osc.start(t);
+    osc.stop(t + 2.0);
+  }
+
+  public stopMusic() {
+    if (this.musicTimer) {
+      clearTimeout(this.musicTimer);
+      this.musicTimer = null;
+    }
+    for (const d of this.droneNodes) {
+      try {
+        d.gain.gain.linearRampToValueAtTime(0.0001, (this.ctx?.currentTime || 0) + 1.0);
+        setTimeout(() => d.osc.stop(), 1100);
+      } catch {}
+    }
+    this.droneNodes = [];
+    this.isMusicPlaying = false;
+  }
+}
+
+export const sound = new SoundEngine();
