@@ -14,6 +14,7 @@ export type ActionType =
   | 'bell'         // Thỉnh chuông
   | 'drum'         // Đánh trống
   | 'lantern'      // Thả đèn hoa đăng
+  | 'sweep'        // Quét lá đa
   | 'wave';        // Vẫy chào
 
 export interface PlayerData {
@@ -37,7 +38,25 @@ export interface RoomInfo {
   name: string;
   count: number;
   max: number;
-  isBase: boolean;
+  isBase?: boolean;
+  theme?: string;       // Cảnh của phòng (xem src/scene/themes.ts)
+}
+
+// Đống lá đa rụng trên sân, quét đi để tích công đức
+export interface LeafPile {
+  id: string;
+  x: number;
+  z: number;
+  seed: number;
+  createdAt: number;
+}
+
+// Một dòng trong bảng Top công đức
+export interface LeaderboardEntry {
+  name: string;
+  merit: number;
+  robe: RobeColor;
+  online: boolean;
 }
 
 export interface IncenseItem {
@@ -85,4 +104,6 @@ export interface OverallStats {
   lanternCount: number;
   flowerCount: number;
   drumCount: number;
+  sweepCount?: number;
+  totalMerit?: number;
 }
