@@ -481,14 +481,14 @@ io.on('connection', (socket: Socket) => {
         stats.incenseCount += 1;
         session.data.anim = 'incense';
 
-        // Tạo 3 nén hương trong lư hương lớn
+        // Cắm 3 nén hương vào lòng tro của lư hương lớn (tâm lư: x=0, z=0.4, mặt tro y≈1.63)
         const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * 0.9;
+        const radius = 0.15 + Math.random() * 0.65;
         const incenseItem: IncenseItem = {
           id: `incense-${now}-${Math.random().toString(36).substr(2, 4)}`,
           x: Math.cos(angle) * radius,
-          y: 1.5,
-          z: 8.5 + Math.sin(angle) * radius,
+          y: 1.63,
+          z: 0.4 + Math.sin(angle) * radius,
           createdAt: now,
           playerName: session.data.name
         };
@@ -506,9 +506,10 @@ io.on('connection', (socket: Socket) => {
 
         const flowerItem: FlowerItem = {
           id: `flower-${now}-${Math.random().toString(36).substr(2, 4)}`,
-          x: -1.2 + Math.random() * 2.4,
-          y: 2.1,
-          z: -12.2 + Math.random() * 0.8,
+          // Đặt trên mặt bàn thờ (tâm bàn: z=-13.6, mặt bàn y≈2.15), tránh 2 cây nến ở x=±1.8
+          x: -1.4 + Math.random() * 2.8,
+          y: 2.15,
+          z: -13.95 + Math.random() * 0.75,
           createdAt: now,
           playerName: session.data.name
         };
@@ -580,8 +581,12 @@ io.on('connection', (socket: Socket) => {
         const lanternItem: LanternItem = {
           id: `lantern-${now}-${Math.random().toString(36).substr(2, 4)}`,
           seed: Math.floor(Math.random() * 100000),
-          x: -18 + Math.random() * 4,
-          z: 10 + Math.random() * 4,
+          // Thả trên mặt hồ sen (tâm hồ: x=-18, z=24; tránh hòn non bộ ở giữa)
+          ...(() => {
+            const a = Math.random() * Math.PI * 2;
+            const r = 3.0 + Math.random() * 3.2;
+            return { x: -18 + Math.cos(a) * r, z: 24 + Math.sin(a) * r };
+          })(),
           text: wishText,
           createdAt: now,
           playerName: session.data.name
