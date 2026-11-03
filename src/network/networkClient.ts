@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardEntry } from '../types.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardData, MeritProfile, CommunalState } from '../types.js';
 
 export interface JoinResponse {
   self: PlayerData;
@@ -10,7 +10,9 @@ export interface JoinResponse {
   lanterns: LanternItem[];
   leaves: LeafPile[];
   uid: string;
-  leaderboard: LeaderboardEntry[];
+  leaderboard: LeaderboardData;
+  profile: MeritProfile;
+  communal: CommunalState;
   serverTime: number;
   wasRedirected?: boolean;
 }
@@ -27,10 +29,12 @@ export class NetworkClient {
   public onPlayerAction?: (data: { playerId: string; anim: ActionType; meritGain: number; merit: number; text?: string }) => void;
   public onChatMessage?: (msg: ChatMessage) => void;
   public onMeritUpdate?: (data: { id: string; merit: number; gain: number }) => void;
-  public onLeaderboard?: (list: LeaderboardEntry[]) => void;
+  public onLeaderboard?: (data: LeaderboardData) => void;
+  public onProfile?: (profile: MeritProfile) => void;
+  public onCommunal?: (state: CommunalState) => void;
   public onLeafAdded?: (leaf: LeafPile) => void;
   public onLeafRemoved?: (data: { id: string; by: string }) => void;
-  public onPlayerUpdated?: (data: { id: string; name: string; robe: RobeColor; style: AvatarStyle }) => void;
+  public onPlayerUpdated?: (data: { id: string; name: string; robe: RobeColor; style: AvatarStyle; items?: string[] }) => void;
   public onBellRung?: (data: { playerName: string; time: number }) => void;
   public onDrumBeaten?: (data: { playerName: string; time: number }) => void;
   public onNewIncense?: (item: IncenseItem) => void;
@@ -94,7 +98,9 @@ export class NetworkClient {
     });
 
     this.socket.on('merit:update', (data) => this.onMeritUpdate?.(data));
-    this.socket.on('leaderboard', (list: LeaderboardEntry[]) => this.onLeaderboard?.(list));
+    this.socket.on('leaderboard', (data: LeaderboardData) => this.onLeaderboard?.(data));
+    this.socket.on('profile:self', (profile: MeritProfile) => this.onProfile?.(profile));
+    this.socket.on('communal', (state: CommunalState) => this.onCommunal?.(state));
     this.socket.on('leaves:add', (leaf: LeafPile) => this.onLeafAdded?.(leaf));
     this.socket.on('leaves:remove', (data) => this.onLeafRemoved?.(data));
 
@@ -193,6 +199,17 @@ export class NetworkClient {
     });
   }
 
+  // Đổi công đức: mua vật phẩm, mang/bỏ vật phẩm, cúng dường chung
+  private shopCall(event: string, data: object): Promise<{ ok?: boolean; error?: string; profile?: MeritProfile }> {
+    return new Promise((resolve) => {
+      if (!this.socket) return resolve({ error: 'Mất kết nối' });
+      this.socket.emit(event, data, (res: any) => resolve(res || {}));
+    });
+  }
+  public buyItem(itemId: string) { return this.shopCall('shop:buy', { itemId }); }
+  public equipItem(itemId: string, on: boolean) { return this.shopCall('shop:equip', { itemId, on }); }
+  public donate(amount: number) { return this.shopCall('communal:donate', { amount }); }
+
   // Gửi chat
   public sendChat(text: string): Promise<{ ok?: boolean; error?: string }> {
     return new Promise((resolve) => {
@@ -215,10 +232,12 @@ export class NetworkClient {
   }
 
   // Mở phòng mới
-  public createRoom(name?: string): Promise<{ ok?: boolean; room?: RoomInfo; error?: string }> {
+  public createRoom(name?: string, theme?: string): Promise<{ ok?: boolean; room?: RoomInfo; error?: string }> {
     return new Promise((resolve) => {
       if (!this.socket) return resolve({ error: 'Mất kết nối' });
-      this.socket.emit('room:create', { name }, (res: any) => {
+      let uid = '';
+      try { uid = localStorage.getItem('chua_uid') || ''; } catch {}
+      this.socket.emit('room:create', { name, theme, uid }, (res: any) => {
         resolve(res || {});
       });
     });
