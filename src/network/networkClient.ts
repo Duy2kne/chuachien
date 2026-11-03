@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle } from '../types.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardEntry } from '../types.js';
 
 export interface JoinResponse {
   self: PlayerData;
@@ -8,6 +8,9 @@ export interface JoinResponse {
   incense: IncenseItem[];
   flowers: FlowerItem[];
   lanterns: LanternItem[];
+  leaves: LeafPile[];
+  uid: string;
+  leaderboard: LeaderboardEntry[];
   serverTime: number;
   wasRedirected?: boolean;
 }
@@ -23,6 +26,11 @@ export class NetworkClient {
   public onStateUpdate?: (compactState: [string, number, number, number, number, ActionType][]) => void;
   public onPlayerAction?: (data: { playerId: string; anim: ActionType; meritGain: number; merit: number; text?: string }) => void;
   public onChatMessage?: (msg: ChatMessage) => void;
+  public onMeritUpdate?: (data: { id: string; merit: number; gain: number }) => void;
+  public onLeaderboard?: (list: LeaderboardEntry[]) => void;
+  public onLeafAdded?: (leaf: LeafPile) => void;
+  public onLeafRemoved?: (data: { id: string; by: string }) => void;
+  public onPlayerUpdated?: (data: { id: string; name: string; robe: RobeColor; style: AvatarStyle }) => void;
   public onBellRung?: (data: { playerName: string; time: number }) => void;
   public onDrumBeaten?: (data: { playerName: string; time: number }) => void;
   public onNewIncense?: (item: IncenseItem) => void;
@@ -85,6 +93,15 @@ export class NetworkClient {
       this.onPlayerAction?.(data);
     });
 
+    this.socket.on('merit:update', (data) => this.onMeritUpdate?.(data));
+    this.socket.on('leaderboard', (list: LeaderboardEntry[]) => this.onLeaderboard?.(list));
+    this.socket.on('leaves:add', (leaf: LeafPile) => this.onLeafAdded?.(leaf));
+    this.socket.on('leaves:remove', (data) => this.onLeafRemoved?.(data));
+
+    this.socket.on('player:update', (data) => {
+      this.onPlayerUpdated?.(data);
+    });
+
     this.socket.on('chat:message', (msg: ChatMessage) => {
       this.onChatMessage?.(msg);
     });
@@ -119,11 +136,15 @@ export class NetworkClient {
     return new Promise((resolve, reject) => {
       if (!this.socket) return reject(new Error('Socket chưa khởi tạo'));
 
-      this.socket.emit('join', data, (res: JoinResponse) => {
+      // Mã người dùng cố định của trình duyệt này: công đức được server lưu theo mã này
+      let uid = '';
+      try { uid = localStorage.getItem('chua_uid') || ''; } catch {}
+      this.socket.emit('join', { ...data, uid }, (res: JoinResponse) => {
         if (!res) {
           reject(new Error('Không nhận được phản hồi từ chùa'));
           return;
         }
+        try { if (res.uid) localStorage.setItem('chua_uid', res.uid); } catch {}
         this.selfData = res.self;
         resolve(res);
       });
@@ -156,6 +177,17 @@ export class NetworkClient {
     return new Promise((resolve) => {
       if (!this.socket) return resolve({ error: 'Mất kết nối' });
       this.socket.emit('action', { type, text }, (res: any) => {
+        resolve(res || {});
+      });
+    });
+  }
+
+  // Đổi tên / màu áo / dáng nhân vật
+  public updateProfile(data: { name?: string; robe?: RobeColor; style?: AvatarStyle }): Promise<{ ok?: boolean; error?: string; self?: { name: string; robe: RobeColor; style: AvatarStyle } }> {
+    return new Promise((resolve) => {
+      if (!this.socket) return resolve({ error: 'Mất kết nối' });
+      this.socket.emit('profile:update', data, (res: any) => {
+        if (res?.ok && this.selfData) Object.assign(this.selfData, res.self);
         resolve(res || {});
       });
     });
