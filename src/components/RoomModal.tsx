@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { RoomInfo, PlayerData } from '../types.js';
 import { ROBE_COLORS } from '../scene/playerAvatar.js';
+import { getTheme } from '../scene/themes.js';
 import { X, Users, Copy, Check, Plus, DoorOpen } from 'lucide-react';
 
 interface RoomModalProps {
@@ -215,7 +216,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-serif font-bold text-xs">{r.name}</span>
+                        <span className="font-serif font-bold text-xs" title={getTheme(r.theme).name}>{getTheme(r.theme).icon} {r.name}</span>
                         {isCurrent ? (
                           <span className="text-[10px] text-amber-400 font-medium">Hiện tại</span>
                         ) : isFull ? (
