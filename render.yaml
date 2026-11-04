@@ -21,3 +21,6 @@ services:
         value: 5
       - key: CORS_ORIGIN
         value: "*"
+      # Mật khẩu trang quản trị: Render sẽ hỏi giá trị khi tạo dịch vụ (không lưu trong Git)
+      - key: ADMIN_PASSWORD
+        sync: false
