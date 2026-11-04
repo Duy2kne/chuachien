@@ -19,6 +19,7 @@ const ACTIONS: ActionItem[] = [
   { type: 'bell', label: 'Thỉnh chuông', icon: '🔔', merit: 3 },
   { type: 'drum', label: 'Đánh trống', icon: '🥁', merit: 3 },
   { type: 'lantern', label: 'Hoa đăng', icon: '🏮', merit: 5 },
+  { type: 'wish', label: 'Cầu duyên', icon: '💞', merit: 5 },
   { type: 'sweep', label: 'Quét lá', icon: '🧹', merit: 2 },
   { type: 'kitchen', label: 'Phụ bếp', icon: '🍲', merit: 5 },
   { type: 'wave', label: 'Vẫy chào', icon: '👋', merit: 0 }
