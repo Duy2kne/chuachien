@@ -9,12 +9,14 @@ import { TempleWorld } from './scene/templeWorld.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
-import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem, LeaderboardData } from './types.js';
+import type { PlayerData, ActionType, RobeColor, AvatarStyle, RoomInfo, OverallStats, ChatMessage, LanternItem, WishItem, LeaderboardData } from './types.js';
 import { EntranceScreen } from './components/EntranceScreen.js';
 import { ActionBar } from './components/ActionBar.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { RoomModal } from './components/RoomModal.js';
 import { LanternDialog } from './components/LanternDialog.js';
+import { WishDialog } from './components/WishDialog.js';
+import { AdminModal } from './components/AdminModal.js';
 import { AudioSettingsModal } from './components/AudioSettingsModal.js';
 import { ProfileModal } from './components/ProfileModal.js';
 import { LeaderboardModal } from './components/LeaderboardModal.js';
@@ -139,6 +141,9 @@ export default function App() {
   const [showRoomModal, setShowRoomModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [wishModal, setWishModal] = useState<{ open: boolean; mode: 'tie' | 'view'; item?: WishItem | null }>({ open: false, mode: 'tie' });
+  // Trang quản trị: mở từ nút 🛡️ ở màn hình vào chùa hoặc địa chỉ có #admin
+  const [showAdmin, setShowAdmin] = useState(() => typeof window !== 'undefined' && window.location.hash === '#admin');
   const [lanternModalState, setLanternModalState] = useState<{
     open: boolean;
     mode: 'release' | 'view';
@@ -343,7 +348,12 @@ export default function App() {
     network.onNewIncense = (item) => worldRef.current?.addObjects([item], [], []);
     network.onNewFlower = (item) => worldRef.current?.addObjects([], [item], []);
     network.onNewLantern = (item) => worldRef.current?.addObjects([], [], [item]);
-    network.onObjectsSync = (data) => worldRef.current?.syncObjects(data.incense, data.flowers, data.lanterns);
+    network.onObjectsSync = (data) => {
+      worldRef.current?.syncObjects(data.incense, data.flowers, data.lanterns);
+      if (data.wishes) worldRef.current?.syncWishes(data.wishes);
+    };
+    network.onNewWish = (item) => worldRef.current?.addWishes([item], true);
+    network.onNotice = ({ text }) => showToast(text);
     network.onConnectionStateChange = (_connected, msg) => { if (msg) showToast(msg); };
   }, []);
 
@@ -1015,6 +1025,21 @@ export default function App() {
       }
     }
 
+    // 1b. Chạm vào dải lụa cầu duyên trên Cây Đa
+    if (worldRef.current) {
+      const wishHits = raycaster.intersectObjects(worldRef.current.wishLayer.children, true);
+      for (const hit of wishHits) {
+        let curr: THREE.Object3D | null = hit.object;
+        while (curr) {
+          if ((curr as any).userData?.wishData) {
+            setWishModal({ open: true, mode: 'view', item: (curr as any).userData.wishData as WishItem });
+            return;
+          }
+          curr = curr.parent;
+        }
+      }
+    }
+
     // 2. Kiểm tra chạm vào người chơi khác
     for (const other of otherAvatarsRef.current.values()) {
       const hits = raycaster.intersectObjects(other.group.children, true);
@@ -1084,6 +1109,7 @@ export default function App() {
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
+        worldRef.current?.syncWishes(res.wishes || []);
         worldRef.current?.syncLeafPiles(res.leaves || []);
         traysRef.current = res.trays || [];
         worldRef.current?.syncTrays(traysRef.current);
@@ -1149,6 +1175,10 @@ export default function App() {
 
     if (type === 'lantern') {
       setLanternModalState({ open: true, mode: 'release' });
+      return;
+    }
+    if (type === 'wish') {
+      setWishModal({ open: true, mode: 'tie' });
       return;
     }
 
@@ -1280,6 +1310,16 @@ export default function App() {
     startAutoWalk(x, z, faceTo(x, z, POND_CENTER.x, POND_CENTER.z), 'lantern', wish);
   };
 
+  // Cầu duyên: đi tới gốc Cây Đa (chỗ gần nhất, ngoài ghế đá) rồi với tay buộc dải lụa
+  const startWishTie = (wish: string) => {
+    const self = selfAvatarRef.current;
+    const world = worldRef.current;
+    if (!self || !world) return;
+    const spot = world.getWishSpot(self.group.position.x, self.group.position.z);
+    const tree = TempleWorld.WISH_TREE;
+    startAutoWalk(spot.x, spot.z, faceTo(spot.x, spot.z, tree.x, tree.z), 'wish', wish);
+  };
+
   const triggerActionDirect = async (type: ActionType, text?: string) => {
     const avatar = selfAvatarRef.current;
     if (!avatar) return;
@@ -1334,6 +1374,7 @@ export default function App() {
           }
         }
         worldRef.current?.syncObjects(res.incense, res.flowers, res.lanterns);
+        worldRef.current?.syncWishes(res.wishes || []);
         worldRef.current?.syncLeafPiles(res.leaves || []);
         traysRef.current = res.trays || [];
         worldRef.current?.syncTrays(traysRef.current);
@@ -1424,6 +1465,7 @@ export default function App() {
           stats={overallStats}
           onEnter={handleEnterTemple}
           onCreateRoom={(name) => network.createRoom(name)}
+          onOpenAdmin={() => setShowAdmin(true)}
         />
       )}
 
@@ -1675,6 +1717,24 @@ export default function App() {
       )}
 
       {/* MODAL THẢ ĐÈN HOA ĐĂNG & CHIÊM BÁI LỜI NGUYỆN */}
+      {wishModal.open && (
+        <WishDialog
+          mode={wishModal.mode}
+          viewingWish={wishModal.item}
+          onClose={() => setWishModal({ open: false, mode: 'tie' })}
+          onTie={(wish) => startWishTie(wish)}
+        />
+      )}
+
+      {showAdmin && (
+        <AdminModal
+          onClose={() => {
+            setShowAdmin(false);
+            if (window.location.hash === '#admin') history.replaceState(null, '', window.location.pathname + window.location.search);
+          }}
+        />
+      )}
+
       {lanternModalState.open && (
         <LanternDialog
           mode={lanternModalState.mode}
