@@ -60,8 +60,8 @@ export const ActionBar: React.FC<ActionBarProps> = ({
   const scrollBy = (dir: number) => scrollRef.current?.scrollBy({ left: dir * 220, behavior: 'smooth' });
 
   return (
-    <div className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-20 w-[96%] max-w-[860px] select-none pb-[env(safe-area-inset-bottom)]">
-      <div className="relative bg-stone-900/90 border border-amber-600/35 rounded-2xl shadow-2xl backdrop-blur-xs">
+    <div className="fixed bottom-3 sm:bottom-4 [@media(max-height:520px)]:bottom-2 left-1/2 -translate-x-1/2 z-20 w-[96%] max-w-[860px] [@media(max-height:520px)]:w-auto [@media(max-height:520px)]:max-w-[calc(100vw-250px)] select-none pb-[env(safe-area-inset-bottom)]">
+      <div className="relative bg-stone-900/80 border border-amber-600/35 rounded-2xl [@media(max-height:520px)]:rounded-full shadow-2xl backdrop-blur-xs">
         <div
           ref={scrollRef}
           onScroll={updateEdges}
@@ -76,18 +76,20 @@ export const ActionBar: React.FC<ActionBarProps> = ({
                 type="button"
                 disabled={isNavigatingToTarget}
                 onClick={() => onTriggerAction(act.type)}
-                className={`flex-1 flex-shrink-0 flex flex-col items-center justify-center min-w-[58px] sm:min-w-[66px] min-h-[56px] sm:min-h-[60px] px-1 py-1 rounded-xl transition cursor-pointer ${
+                title={`${act.label}${act.merit > 0 ? ` (+${act.merit})` : ''}`}
+                aria-label={act.label}
+                className={`flex-1 flex-shrink-0 flex flex-col items-center justify-center min-w-[58px] sm:min-w-[66px] min-h-[56px] sm:min-h-[60px] [@media(max-height:520px)]:min-w-[44px] [@media(max-height:520px)]:min-h-[44px] [@media(max-height:520px)]:w-11 [@media(max-height:520px)]:h-11 [@media(max-height:520px)]:flex-none [@media(max-height:520px)]:rounded-full px-1 py-1 rounded-xl transition cursor-pointer ${
                   isActive
                     ? 'bg-amber-500 text-stone-950 font-bold shadow-md shadow-amber-500/30'
                     : 'bg-stone-950/70 hover:bg-stone-800 text-stone-200 border border-stone-800/80 hover:border-amber-500/40'
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 <span className="text-xl leading-none">{act.icon}</span>
-                <span className="text-[10px] sm:text-[11px] font-medium tracking-tight whitespace-nowrap mt-0.5">
+                <span className="text-[10px] sm:text-[11px] font-medium tracking-tight whitespace-nowrap mt-0.5 [@media(max-height:520px)]:hidden">
                   {act.label}
                 </span>
                 {act.merit > 0 && (
-                  <span className={`text-[9px] leading-tight font-serif ${isActive ? 'text-stone-950 font-bold' : 'text-amber-400/90'}`}>
+                  <span className={`text-[9px] leading-tight font-serif [@media(max-height:520px)]:hidden ${isActive ? 'text-stone-950 font-bold' : 'text-amber-400/90'}`}>
                     +{act.merit}
                   </span>
                 )}
