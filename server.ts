@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
 import { DINING, TRAY_SLOTS, TRAY_TTL_MS, BUNS_PER_PLATE, KITCHEN_REACH, SERVE_REACH, traySlot, type TrayItem } from './src/shared/dining.js';
 import { SHOP_ITEMS, COMMUNAL_PROJECTS, getShopItem, weekKey, type CommunalState, type MeritProfile, type WeeklyWinner } from './src/shared/merit.js';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, WishItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -144,6 +144,7 @@ interface RoomState {
   incense: IncenseItem[];
   flowers: FlowerItem[];
   lanterns: LanternItem[];
+  wishes: WishItem[];     // dải lụa cầu duyên buộc trên cây đa
   lastBellTime: number;
   lastDrumTime: number;
   leaves: LeafPile[];
@@ -176,6 +177,7 @@ for (const base of BASE_ROOMS) {
     incense: [],
     flowers: [],
     lanterns: [],
+    wishes: [],
     lastBellTime: 0,
     lastDrumTime: 0,
     leaves: [],
@@ -201,6 +203,19 @@ interface PlayerSession {
 }
 
 const players = new Map<string, PlayerSession>();
+
+// Cây đa se duyên: tối đa 60 dải lụa mỗi phòng, giữ 24 giờ
+const WISH_SLOTS = 60;
+const WISH_TTL_MS = 24 * 60 * 60 * 1000;
+
+function syncRoomObjects(room: RoomState) {
+  io.to(room.id).emit('objects:sync', {
+    incense: room.incense,
+    flowers: room.flowers,
+    lanterns: room.lanterns,
+    wishes: room.wishes
+  });
+}
 const ipRoomCreations = new Map<string, number>();
 
 const app = express();
@@ -409,27 +424,165 @@ app.get('/api/stats', (_req, res) => {
   res.json(stats);
 });
 
-// Cộng công đức thủ công cho 1 uid (chỉ chủ chùa dùng, cần header x-admin-key trùng biến môi trường ADMIN_KEY)
+// ===================== QUẢN TRỊ (ADMIN) =====================
+// Mật khẩu đặt ở biến môi trường ADMIN_PASSWORD (vẫn nhận ADMIN_KEY cũ). Không đặt = tắt trang quản trị.
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || process.env.ADMIN_KEY || '';
+const adminFails = new Map<string, { n: number; until: number }>();
+
+function checkAdmin(req: express.Request, res: express.Response): boolean {
+  if (!ADMIN_PASSWORD) {
+    res.status(503).json({ error: 'Server chưa đặt mật khẩu quản trị (biến môi trường ADMIN_PASSWORD)' });
+    return false;
+  }
+  const ip = req.ip || 'unknown';
+  const fail = adminFails.get(ip);
+  if (fail && fail.until > Date.now()) {
+    res.status(429).json({ error: 'Nhập sai quá nhiều lần, vui lòng thử lại sau 10 phút' });
+    return false;
+  }
+  const provided = Buffer.from(String(req.body?.password ?? req.get('x-admin-key') ?? ''));
+  const expected = Buffer.from(ADMIN_PASSWORD);
+  const ok = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+  if (!ok) {
+    const n = (fail?.n || 0) + 1;
+    adminFails.set(ip, n >= 8 ? { n: 0, until: Date.now() + 10 * 60 * 1000 } : { n, until: 0 });
+    res.status(401).json({ error: 'Mật khẩu quản trị không đúng' });
+    return false;
+  }
+  adminFails.delete(ip);
+  return true;
+}
+
+// Cộng (delta > 0) hoặc trừ (delta < 0) công đức cho 1 người, báo ngay nếu đang online
+function adminAdjustMerit(uid: string, delta: number, reason: string) {
+  const rec = meritStore.get(uid);
+  if (!rec) return null;
+  const merit = Math.max(0, (rec.merit || 0) + delta);
+  const spent = Math.min(rec.spent || 0, merit);
+  touchRecord(uid, { merit, spent });
+  saveMerit();
+  console.log(`[Admin] ${delta > 0 ? '+' : ''}${delta} công đức cho ${rec.name} (${uid}) -> ${merit}${reason ? ` | ${reason}` : ''}`);
+  for (const session of players.values()) {
+    if (session.uid !== uid) continue;
+    session.data.merit = merit;
+    io.to(session.room).emit('merit:update', { id: session.data.id, merit, gain: Math.max(0, delta) });
+    sendProfile(session);
+    session.socket.emit('notice', {
+      text: delta > 0
+        ? `🙏 Ban quản trị chùa tặng bạn +${delta} công đức${reason ? ` (${reason})` : ''}`
+        : `Công đức của bạn được điều chỉnh ${delta}${reason ? ` (${reason})` : ''}`
+    });
+  }
+  scheduleLeaderboardBroadcast();
+  return { uid, name: rec.name, ...getProfile(uid) };
+}
+
+app.post('/api/admin/verify', (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/action', (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const action = String(req.body?.action || '');
+  const payload = req.body?.payload || {};
+
+  if (action === 'overview') {
+    let wishes = 0;
+    let lanterns = 0;
+    for (const r of rooms.values()) {
+      wishes += r.wishes.length;
+      lanterns += r.lanterns.length;
+    }
+    res.json({ ok: true, online: players.size, totalUsers: meritStore.size, rooms: getRoomList(), stats, wishes, lanterns });
+  } else if (action === 'list_users') {
+    const online = new Map<string, string>();
+    for (const session of players.values()) online.set(session.uid, rooms.get(session.room)?.name || '');
+    const users = Array.from(meritStore.entries())
+      .map(([uid, r]) => ({
+        uid,
+        name: r.name || 'Phật tử',
+        merit: r.merit || 0,
+        balance: Math.max(0, (r.merit || 0) - (r.spent || 0)),
+        isOnline: online.has(uid),
+        room: online.get(uid) || '',
+        updatedAt: r.updatedAt
+      }))
+      .sort((x, y) => Number(y.isOnline) - Number(x.isOnline) || y.merit - x.merit)
+      .slice(0, 500);
+    res.json({ ok: true, users });
+  } else if (action === 'adjust_merit') {
+    const uid = typeof payload.uid === 'string' ? payload.uid : '';
+    const delta = Math.trunc(Number(payload.delta));
+    if (!Number.isFinite(delta) || delta === 0 || Math.abs(delta) > 1_000_000) {
+      res.status(400).json({ error: 'Số công đức không hợp lệ (từ -1.000.000 đến 1.000.000, khác 0)' });
+      return;
+    }
+    const reason = cleanText(typeof payload.reason === 'string' ? payload.reason : '', 80);
+    const user = adminAdjustMerit(uid, delta, reason);
+    if (!user) {
+      res.status(404).json({ error: 'Không tìm thấy người này' });
+      return;
+    }
+    res.json({ ok: true, message: `Đã ${delta > 0 ? 'cộng' : 'trừ'} ${Math.abs(delta)} công đức cho ${user.name} (còn ${user.merit})`, user });
+  } else if (action === 'announce') {
+    const text = cleanText(typeof payload.text === 'string' ? payload.text : '', 160);
+    if (!text) {
+      res.status(400).json({ error: 'Nội dung thông báo trống' });
+      return;
+    }
+    io.emit('notice', { text: `📢 ${text}`, long: true });
+    io.emit('chat:message', {
+      id: `admin-${Date.now()}`,
+      playerId: 'admin',
+      playerName: 'Ban quản trị chùa',
+      text,
+      time: Date.now(),
+      isSystem: true
+    });
+    console.log(`[Admin] Thông báo: ${text}`);
+    res.json({ ok: true, message: 'Đã gửi thông báo tới toàn chùa' });
+  } else if (action === 'list_offerings') {
+    const items: { kind: 'wish' | 'lantern'; roomId: string; roomName: string; id: string; playerName: string; text: string; createdAt: number }[] = [];
+    for (const r of rooms.values()) {
+      for (const w of r.wishes) items.push({ kind: 'wish', roomId: r.id, roomName: r.name, id: w.id, playerName: w.playerName, text: w.text, createdAt: w.createdAt });
+      for (const l of r.lanterns) items.push({ kind: 'lantern', roomId: r.id, roomName: r.name, id: l.id, playerName: l.playerName, text: l.text, createdAt: l.createdAt });
+    }
+    items.sort((x, y) => y.createdAt - x.createdAt);
+    res.json({ ok: true, items });
+  } else if (action === 'delete_offering') {
+    const room = rooms.get(String(payload.roomId || ''));
+    const id = String(payload.id || '');
+    if (!room) {
+      res.status(404).json({ error: 'Không tìm thấy phòng' });
+      return;
+    }
+    const before = room.wishes.length + room.lanterns.length;
+    room.wishes = room.wishes.filter(w => w.id !== id);
+    room.lanterns = room.lanterns.filter(l => l.id !== id);
+    if (before === room.wishes.length + room.lanterns.length) {
+      res.status(404).json({ error: 'Lời cầu này đã được gỡ hoặc hết hạn' });
+      return;
+    }
+    syncRoomObjects(room);
+    res.json({ ok: true, message: 'Đã gỡ lời cầu' });
+  } else {
+    res.status(400).json({ error: 'Thao tác không hợp lệ' });
+  }
+});
+
+// API cũ: cộng công đức bằng header x-admin-key (giữ lại cho script cũ)
 app.post('/api/admin/merit', (req, res) => {
-  const adminKey = process.env.ADMIN_KEY;
-  if (!adminKey) return res.status(503).json({ error: 'Server chưa cấu hình ADMIN_KEY' });
-
-  const provided = Buffer.from(String(req.get('x-admin-key') || ''));
-  const expected = Buffer.from(adminKey);
-  const authorized = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
-  if (!authorized) return res.status(401).json({ error: 'Sai admin key' });
-
+  if (!checkAdmin(req, res)) return;
   const uid = String(req.body?.uid || '').trim();
   const amount = Number(req.body?.amount);
   if (!uid) return res.status(400).json({ error: 'Thiếu uid' });
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
     return res.status(400).json({ error: 'amount phải là số dương hợp lệ' });
   }
-
-  const current = meritStore.get(uid);
-  touchRecord(uid, { merit: (current?.merit || 0) + amount });
-  saveMerit();
-  res.json({ ok: true, uid, merit: meritStore.get(uid)?.merit });
+  const user = adminAdjustMerit(uid, Math.trunc(amount), '');
+  if (!user) return res.status(404).json({ error: 'Không tìm thấy uid' });
+  res.json({ ok: true, uid, merit: user.merit });
 });
 
 // Âm thanh tuỳ chọn thay cho âm thanh tổng hợp (drum / bell / woodfish / chime)
@@ -510,6 +663,7 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
           incense: [],
           flowers: [],
           lanterns: [],
+          wishes: [],
           lastBellTime: 0,
           lastDrumTime: 0,
           leaves: [],
@@ -547,6 +701,7 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
       incense: [],
       flowers: [],
       lanterns: [],
+      wishes: [],
       lastBellTime: 0,
       lastDrumTime: 0,
       leaves: [],
@@ -602,6 +757,7 @@ io.on('connection', (socket: Socket) => {
       incense: [],
       flowers: [],
       lanterns: [],
+      wishes: [],
       lastBellTime: 0,
       lastDrumTime: 0,
       leaves: [],
@@ -705,6 +861,7 @@ io.on('connection', (socket: Socket) => {
       incense: room.incense,
       flowers: room.flowers,
       lanterns: room.lanterns,
+      wishes: room.wishes,
       leaves: room.leaves,
       trays: room.trays,
       uid,
@@ -897,6 +1054,37 @@ io.on('connection', (socket: Socket) => {
         if (room.lanterns.length > 36) room.lanterns.shift();
         io.to(room.id).emit('object:lantern', lanternItem);
         broadCastText = `🏮 ${session.data.name} vừa thả đèn hoa đăng: "${wishText.substring(0, 36)}${wishText.length > 36 ? '...' : ''}"`;
+        break;
+      }
+
+      case 'wish': {
+        // Buộc dải lụa đỏ cầu duyên lên cây đa: mỗi dải 1 chỗ trên cành, đầy thì thay dải cũ nhất
+        meritGain = 5;
+        stats.wishCount = (stats.wishCount || 0) + 1;
+        session.data.anim = 'wish';
+        const wishText = cleanText(data.text || '', 120) || 'Cầu cho con sớm gặp được người thương 💞';
+        const used = new Set(room.wishes.map(w => w.slot));
+        const free = Array.from({ length: WISH_SLOTS }, (_, i) => i).filter(i => !used.has(i));
+        let replaced = false;
+        let slot: number;
+        if (free.length) {
+          slot = free[Math.floor(Math.random() * free.length)];
+        } else {
+          const oldest = room.wishes.shift()!;
+          slot = oldest.slot;
+          replaced = true;
+        }
+        const wishItem: WishItem = {
+          id: `wish-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          slot,
+          text: wishText,
+          createdAt: now,
+          playerName: session.data.name
+        };
+        room.wishes.push(wishItem);
+        if (replaced) syncRoomObjects(room);
+        else io.to(room.id).emit('object:wish', wishItem);
+        broadCastText = `💞 ${session.data.name} vừa buộc dải lụa cầu duyên lên Cây Đa: "${wishText.substring(0, 36)}${wishText.length > 36 ? '...' : ''}"`;
         break;
       }
 
@@ -1208,6 +1396,7 @@ io.on('connection', (socket: Socket) => {
       incense: targetRoom.incense,
       flowers: targetRoom.flowers,
       lanterns: targetRoom.lanterns,
+      wishes: targetRoom.wishes,
       leaves: targetRoom.leaves,
       trays: targetRoom.trays
     };
@@ -1276,17 +1465,17 @@ setInterval(() => {
     // 3. Đèn tồn tại 20 phút (1200s)
     const prevLanternCount = room.lanterns.length;
     room.lanterns = room.lanterns.filter(l => now - l.createdAt < 1200000);
+    // 4. Dải lụa cầu duyên tồn tại 24 giờ
+    const prevWishCount = room.wishes.length;
+    room.wishes = room.wishes.filter(w => now - w.createdAt < WISH_TTL_MS);
 
     if (
       prevIncenseCount !== room.incense.length ||
       prevFlowerCount !== room.flowers.length ||
-      prevLanternCount !== room.lanterns.length
+      prevLanternCount !== room.lanterns.length ||
+      prevWishCount !== room.wishes.length
     ) {
-      io.to(room.id).emit('objects:sync', {
-        incense: room.incense,
-        flowers: room.flowers,
-        lanterns: room.lanterns
-      });
+      syncRoomObjects(room);
     }
 
     // Mâm cơm để trên bàn 5 phút thì được dọn đi
