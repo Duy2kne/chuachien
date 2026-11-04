@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import type { TrayItem } from '../shared/dining.js';
-import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardData, MeritProfile, CommunalState } from '../types.js';
+import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, WishItem, ChatMessage, ActionType, RobeColor, AvatarStyle, LeafPile, LeaderboardData, MeritProfile, CommunalState } from '../types.js';
 
 export interface JoinResponse {
   self: PlayerData;
@@ -9,6 +9,7 @@ export interface JoinResponse {
   incense: IncenseItem[];
   flowers: FlowerItem[];
   lanterns: LanternItem[];
+  wishes?: WishItem[];
   leaves: LeafPile[];
   trays: TrayItem[];
   uid: string;
@@ -43,7 +44,10 @@ export class NetworkClient {
   public onNewIncense?: (item: IncenseItem) => void;
   public onNewFlower?: (item: FlowerItem) => void;
   public onNewLantern?: (item: LanternItem) => void;
-  public onObjectsSync?: (data: { incense: IncenseItem[]; flowers: FlowerItem[]; lanterns: LanternItem[] }) => void;
+  public onObjectsSync?: (data: { incense: IncenseItem[]; flowers: FlowerItem[]; lanterns: LanternItem[]; wishes?: WishItem[] }) => void;
+  public onNewWish?: (item: WishItem) => void;
+  // Thông báo từ ban quản trị (cộng công đức, thông báo toàn chùa)
+  public onNotice?: (data: { text: string; long?: boolean }) => void;
   public onRoomsList?: (rooms: RoomInfo[]) => void;
   public onConnectionStateChange?: (connected: boolean, message?: string) => void;
 
@@ -139,6 +143,9 @@ export class NetworkClient {
     this.socket.on('objects:sync', (data) => {
       this.onObjectsSync?.(data);
     });
+
+    this.socket.on('object:wish', (item: WishItem) => this.onNewWish?.(item));
+    this.socket.on('notice', (data: { text: string; long?: boolean }) => this.onNotice?.(data));
   }
 
   // Vào chùa
