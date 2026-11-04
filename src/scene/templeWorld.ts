@@ -11,7 +11,7 @@ import {
   getGrassTexture,
   createHaloTexture
 } from './proceduralTextures.js';
-import type { IncenseItem, FlowerItem, LanternItem, LeafPile } from '../types.js';
+import type { IncenseItem, FlowerItem, LanternItem, LeafPile, WishItem } from '../types.js';
 import { DEFAULT_THEME, type TempleTheme } from './themes.js';
 import { DINING, traySlot, type TrayItem } from '../shared/dining.js';
 
@@ -2609,61 +2609,272 @@ export class TempleWorld {
     );
   }
 
-  // ===================== 11. CÂY BỒ ĐỀ LỚN & VÒNG GHẾ ĐÁ (GÓC TRÁI NHƯ TRONG ẢNH MẪU) =====================
+  // ===================== 11. CÂY ĐA SE DUYÊN: CÀNH XOÈ RỘNG, RỄ PHỤ BUÔNG RỦ, HÀNG TRĂM DẢI LỤA ĐỎ =====================
+  public static readonly WISH_TREE = { x: -18, z: 14 };
+  public wishLayer = new THREE.Group();
+  private wishBranches: THREE.Curve<THREE.Vector3>[] = [];
+  private wishMeshMap = new Map<string, THREE.Group>();
+  private ribbonMesh: THREE.InstancedMesh | null = null;
+  private ribbonData: { p: THREE.Vector3; ry: number; len: number; phase: number }[] = [];
+  private ribbonDummy = new THREE.Object3D();
+  private wishMats: { ribbon: THREE.MeshStandardMaterial; heart: THREE.MeshStandardMaterial; gold: THREE.MeshStandardMaterial; hit: THREE.MeshBasicMaterial } | null = null;
+  private heartGeo: THREE.ExtrudeGeometry | null = null;
+
   private buildBodhiTree() {
+    const C = TempleWorld.WISH_TREE;
     const tree = new THREE.Group();
-    tree.position.set(-18, 0, 14);
+    tree.position.set(C.x, 0, C.z);
+    const rnd = seeded(2024);
+    const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+    const barkMat = new THREE.MeshStandardMaterial({ color: 0x4f3d2e, roughness: 0.95 });
+    const rootMat = new THREE.MeshStandardMaterial({ color: 0x6b5644, roughness: 0.95 });
 
-    const barkMat = new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.95 });
-
-    // Thân cây bồ đề nhiều nhánh
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.8, 5.5, 12), barkMat);
-    trunk.position.y = 2.75;
-    trunk.castShadow = true;
+    // Thân to, gân guốc: lõi + nhiều rễ bám thân xoắn quanh
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.7, 5.0, 14), barkMat);
+    trunk.position.y = 2.5;
     tree.add(trunk);
-
-    // Rễ phụ buông rủ
-    for (let r = 0; r < 6; r++) {
-      const root = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 4.2, 6), barkMat);
-      const ra = (r * Math.PI * 2) / 6;
-      root.position.set(Math.cos(ra) * 1.65, 2.1, Math.sin(ra) * 1.65);
-      tree.add(root);
-    }
-
-    // Tán lá bồ đề đa tầng gồm các khối icosahedron xanh lá nhiều sắc độ (flatShading)
-    const leafColors = [0x2d6a4f, 0x40916c, 0x52b788, 0x1b4332];
-    const crownClusters = [
-      { x: 0, y: 6.2, z: 0, s: 4.2, c: 0 },
-      { x: -2.2, y: 5.6, z: -1.5, s: 3.2, c: 1 },
-      { x: 2.2, y: 5.8, z: 1.2, s: 3.4, c: 2 },
-      { x: -1.4, y: 5.8, z: 1.8, s: 3.1, c: 3 },
-      { x: 1.6, y: 5.4, z: -2.0, s: 3.0, c: 0 }
-    ];
-
-    for (const c of crownClusters) {
-      const foliageMat = new THREE.MeshStandardMaterial({
-        color: leafColors[c.c],
-        roughness: 0.85,
-        flatShading: true
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2;
+      const pts = [0, 1, 2, 3, 4].map((k) => {
+        const tw = a + k * 0.25;
+        const r = 1.75 - k * 0.17;
+        return V(Math.cos(tw) * r, k * 1.15, Math.sin(tw) * r);
       });
-      this.themeMats.foliage.push(foliageMat);
-      const foliage = this.createFoliageClump([foliageMat], c.s, 4);
-      foliage.position.set(c.x, c.y, c.z);
-      tree.add(foliage);
+      tree.add(new THREE.Mesh(TempleWorld.taperTube(new THREE.CatmullRomCurve3(pts), 16, 0.32, 0.14, 8), barkMat));
     }
 
-    // Ghế đá tròn vòng quanh gốc bồ đề
+    // Cành lớn xoè ngang (dùng để treo dải lụa)
+    const nB = 10;
+    for (let i = 0; i < nB; i++) {
+      const a = (i / nB) * Math.PI * 2 + rnd() * 0.3;
+      const len = 5.2 + rnd() * 1.3;
+      const d = V(Math.cos(a), 0, Math.sin(a));
+      // cành vươn ngang rồi rủ thấp dần ra ngoài để dải lụa buông tới ngang tầm mắt
+      const curve = new THREE.CatmullRomCurve3([
+        V(0, 4.0, 0).addScaledVector(d, 0.6),
+        V(0, 4.7 + rnd() * 0.4, 0).addScaledVector(d, len * 0.38),
+        V(0, 4.4 + rnd() * 0.4, 0).addScaledVector(d, len * 0.72),
+        V(0, 3.9 + rnd() * 0.4, 0).addScaledVector(d, len)
+      ]);
+      this.wishBranches.push(curve);
+      tree.add(new THREE.Mesh(TempleWorld.taperTube(curve, 24, 0.34, 0.09, 8), barkMat));
+      // cành phụ vươn lên đỡ tán
+      for (const t of [0.45, 0.8]) {
+        const base = curve.getPoint(t);
+        const up = base.clone().add(V((rnd() - 0.5) * 1.2, 1.4 + rnd() * 0.6, (rnd() - 0.5) * 1.2));
+        tree.add(new THREE.Mesh(this.makeLimb(base, up, 0.12, 0.05), barkMat));
+      }
+      // rễ phụ buông rủ: gần thân thì cắm xuống đất, ra xa thì lơ lửng trên đầu người
+      for (const t of [0.22, 0.5, 0.68, 0.86]) {
+        const top = curve.getPoint(t);
+        const toGround = t < 0.3;
+        const bottomY = toGround ? 0 : 2.3 + rnd() * 0.8;
+        const sway = V((rnd() - 0.5) * 0.25, 0, (rnd() - 0.5) * 0.25);
+        tree.add(new THREE.Mesh(
+          TempleWorld.taperTube(new THREE.CatmullRomCurve3([top, top.clone().add(sway).setY((top.y + bottomY) / 2), top.clone().add(sway).setY(bottomY)]), 8, toGround ? 0.09 : 0.04, toGround ? 0.12 : 0.012, 6),
+          rootMat
+        ));
+      }
+    }
+
+    // Tán lá xanh tươi, nâng cao và thưa để thấy rõ dải lụa bên dưới (đa xanh quanh năm, không đổi theo mùa)
+    const leafColors = [0x4f9a4f, 0x67b45f, 0x3f8a48, 0x7cc06a];
+    const foliageMats = leafColors.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
+    const top = this.createFoliageClump(foliageMats, 2.8, 5);
+    top.position.set(0, 8.0, 0);
+    top.scale.set(1.3, 0.7, 1.3);
+    tree.add(top);
+    this.wishBranches.forEach((curve, i) => {
+      for (const t of [0.5, 0.92]) {
+        const p = curve.getPoint(t);
+        const clump = this.createFoliageClump([foliageMats[(i + (t > 0.7 ? 1 : 0)) % 4]], t > 0.7 ? 1.4 : 1.7, 4);
+        clump.position.set(p.x, p.y + 2.1, p.z);
+        clump.scale.set(1.25, 0.6, 1.25);
+        tree.add(clump);
+      }
+    });
+
+    // Ghế đá tròn vòng quanh gốc
     const bench = new THREE.Mesh(
-      new THREE.TorusGeometry(2.8, 0.28, 8, 20),
+      new THREE.TorusGeometry(2.8, 0.28, 8, 24),
       new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.8 })
     );
     bench.rotation.x = Math.PI / 2;
     bench.position.y = 0.35;
     tree.add(bench);
 
-    this.scene.add(tree);
+    // Hàng trăm dải lụa đỏ (và ít dải hồng, vàng) buộc dọc các cành
+    const ribbonGeo = new THREE.PlaneGeometry(0.085, 1);
+    ribbonGeo.translate(0, -0.5, 0);
+    const ribbonMat = new THREE.MeshStandardMaterial({ color: 0xffffff, side: THREE.DoubleSide, roughness: 0.55, emissive: 0x3a0505, emissiveIntensity: 0.35 });
+    const perBranch = 46;
+    const count = nB * perBranch;
+    this.ribbonMesh = new THREE.InstancedMesh(ribbonGeo, ribbonMat, count);
+    this.ribbonMesh.frustumCulled = false;
+    const reds = [0xd7191f, 0xe53935, 0xc62828, 0xff3b30, 0xb71c1c, 0xef5350, 0xf06292, 0xf2c14e];
+    const col = new THREE.Color();
+    let idx = 0;
+    this.wishBranches.forEach((curve) => {
+      for (let k = 0; k < perBranch; k++) {
+        const t = 0.16 + (k / (perBranch - 1)) * 0.82 + (rnd() - 0.5) * 0.02;
+        const p = curve.getPoint(Math.min(0.99, t));
+        p.x += (rnd() - 0.5) * 0.3;
+        p.z += (rnd() - 0.5) * 0.3;
+        p.y -= 0.08;
+        this.ribbonData.push({ p, ry: rnd() * Math.PI, len: 0.75 + rnd() * 0.75, phase: rnd() * Math.PI * 2 });
+        const r = rnd();
+        this.ribbonMesh!.setColorAt(idx, col.setHex(reds[r < 0.85 ? Math.floor(rnd() * 6) : r < 0.95 ? 6 : 7]));
+        idx++;
+      }
+    });
+    this.updateRibbons(0);
+    tree.add(this.ribbonMesh);
 
-    this.collisionCircles.push({ x: -18, z: 14, r: 3.1 });
+    // Bảng gỗ "CÂY ĐA SE DUYÊN" quay ra lối đi chính
+    const sign = new THREE.Group();
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x6b3f22, roughness: 0.7 });
+    for (const sx of [-0.75, 0.75]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.9, 8), postMat);
+      post.position.set(sx, 0.95, 0);
+      sign.add(post);
+    }
+    const board = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 0.75, 0.08),
+      new THREE.MeshStandardMaterial({ map: createPlaqueTexture('CÂY ĐA SE DUYÊN', 'Buộc dải lụa đỏ · Cầu tình duyên'), roughness: 0.5 })
+    );
+    board.position.y = 1.6;
+    sign.add(board);
+    sign.rotation.y = Math.PI / 2;
+    sign.position.set(-13.8, 0, 12.4);
+    this.scene.add(sign);
+    this.collisionCircles.push({ x: -13.8, z: 12.4, r: 0.5 });
+
+    this.scene.add(tree);
+    this.scene.add(this.wishLayer);
+    this.collisionCircles.push({ x: C.x, z: C.z, r: 3.1 });
+  }
+
+  private updateRibbons(elapsed: number) {
+    if (!this.ribbonMesh) return;
+    const d = this.ribbonDummy;
+    for (let i = 0; i < this.ribbonData.length; i++) {
+      const r = this.ribbonData[i];
+      d.position.copy(r.p);
+      d.rotation.set(Math.sin(elapsed * 1.1 + r.phase) * 0.12, r.ry, Math.sin(elapsed * 1.6 + r.phase * 1.3) * 0.1);
+      d.scale.set(1, r.len, 1);
+      d.updateMatrix();
+      this.ribbonMesh.setMatrixAt(i, d.matrix);
+    }
+    this.ribbonMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // Vị trí treo dải lụa cầu duyên thứ `slot` (0..59) trên cành, toạ độ thế giới
+  private wishSlotPosition(slot: number) {
+    const C = TempleWorld.WISH_TREE;
+    const nB = this.wishBranches.length || 8;
+    const b = slot % nB;
+    const k = Math.floor(slot / nB);
+    const t = Math.min(0.95, 0.28 + k * 0.085 + (slot % 3) * 0.012);
+    const p = this.wishBranches[b].getPoint(t);
+    return new THREE.Vector3(C.x + p.x, p.y - 0.1, C.z + p.z);
+  }
+
+  private makeWishRibbon(item: WishItem) {
+    if (!this.wishMats) {
+      this.wishMats = {
+        ribbon: new THREE.MeshStandardMaterial({ color: 0xe0161e, side: THREE.DoubleSide, roughness: 0.45, emissive: 0x7a0a0a, emissiveIntensity: 0.45 }),
+        heart: new THREE.MeshStandardMaterial({ color: 0xff2d55, roughness: 0.35, metalness: 0.1, emissive: 0xff2d55, emissiveIntensity: 0.35 }),
+        gold: new THREE.MeshStandardMaterial({ color: 0xe8b94a, metalness: 0.75, roughness: 0.3 }),
+        hit: new THREE.MeshBasicMaterial({ visible: false })
+      };
+      const hs = new THREE.Shape();
+      hs.moveTo(0, -0.1);
+      hs.bezierCurveTo(-0.02, -0.06, -0.12, -0.02, -0.12, 0.04);
+      hs.bezierCurveTo(-0.12, 0.1, -0.05, 0.12, 0, 0.07);
+      hs.bezierCurveTo(0.05, 0.12, 0.12, 0.1, 0.12, 0.04);
+      hs.bezierCurveTo(0.12, -0.02, 0.02, -0.06, 0, -0.1);
+      this.heartGeo = new THREE.ExtrudeGeometry(hs, { depth: 0.035, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2, curveSegments: 10 });
+      this.heartGeo.translate(0, 0, -0.0175);
+    }
+    const M = this.wishMats;
+    const g = new THREE.Group();
+    g.userData = { wishData: item, pop: 0, phase: (item.slot * 1.7) % (Math.PI * 2) };
+    // nút thắt + 2 dải lụa dài buông xuống + thẻ trái tim ở cuối
+    const knot = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), M.ribbon);
+    g.add(knot);
+    for (const sx of [-0.045, 0.045]) {
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.085, 1.15), M.ribbon);
+      strip.position.set(sx, -0.6, 0);
+      strip.rotation.z = sx * 0.6;
+      g.add(strip);
+    }
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.01, 6, 12), M.gold);
+    ring.position.y = -1.2;
+    g.add(ring);
+    const heart = new THREE.Mesh(this.heartGeo!, M.heart);
+    heart.scale.setScalar(1.15);
+    heart.position.y = -1.32;
+    g.add(heart);
+    const hit = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.6, 0.5), M.hit);
+    hit.position.y = -0.75;
+    g.add(hit);
+    g.position.copy(this.wishSlotPosition(item.slot));
+    g.rotation.y = (item.slot * 2.39) % (Math.PI * 2);
+    return g;
+  }
+
+  // Thêm dải lụa mới (vừa có người buộc): hiện ra kèm hiệu ứng bung nhẹ
+  public addWishes(list: WishItem[], animate = true) {
+    for (const item of list) {
+      if (this.wishMeshMap.has(item.id)) continue;
+      const g = this.makeWishRibbon(item);
+      g.userData.pop = animate ? 0 : 1;
+      if (animate) g.scale.setScalar(0.01);
+      this.wishLayer.add(g);
+      this.wishMeshMap.set(item.id, g);
+    }
+  }
+
+  public syncWishes(list: WishItem[]) {
+    const ids = new Set(list.map((w) => w.id));
+    for (const [id, g] of this.wishMeshMap) {
+      if (ids.has(id)) continue;
+      this.wishLayer.remove(g);
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry !== this.heartGeo) m.geometry.dispose();
+      });
+      this.wishMeshMap.delete(id);
+    }
+    this.addWishes(list, false);
+  }
+
+  // Điểm đứng buộc dải lụa: vòng quanh gốc đa (ngoài ghế đá), gần người chơi nhất và không vướng hồ sen
+  public getWishSpot(fromX: number, fromZ: number) {
+    const C = TempleWorld.WISH_TREE;
+    const base = Math.atan2(fromZ - C.z, fromX - C.x);
+    for (let k = 0; k < 24; k++) {
+      const a = base + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 12);
+      const x = C.x + Math.cos(a) * 3.7;
+      const z = C.z + Math.sin(a) * 3.7;
+      if (this.checkCollision(x, z).allowed) return { x, z, ry: Math.atan2(C.x - x, C.z - z) };
+    }
+    return { x: C.x + 3.7, z: C.z, ry: -Math.PI / 2 };
+  }
+
+  private updateWishes(delta: number, elapsed: number) {
+    this.updateRibbons(elapsed);
+    for (const g of this.wishLayer.children) {
+      const u = g.userData;
+      if (u.pop < 1) {
+        u.pop = Math.min(1, u.pop + delta / 0.7);
+        const k = u.pop;
+        const s = 1 + 2.7 * Math.pow(k - 1, 3) + 1.7 * Math.pow(k - 1, 2);
+        g.scale.setScalar(Math.max(0.01, s));
+      }
+      g.rotation.z = Math.sin(elapsed * 1.3 + u.phase) * 0.09;
+      g.rotation.x = Math.sin(elapsed * 0.9 + u.phase * 0.7) * 0.06;
+    }
   }
 
   // ===================== 12. 15-20 CÂY HOA SỨ & BONSAI DỌC LỐI ĐI =====================
@@ -2741,16 +2952,14 @@ export class TempleWorld {
     // Cây hoa anh đào tán hồng (x, z, độ to)
     const cherries: [number, number, number][] = [
       [-14.5, 0, 1.1], [14.5, 0, 1.1],
-      [12.5, 13.5, 1.0], [-10.5, 19, 0.95],
-      [11.5, 24.5, 0.95],
       [-6.8, 40.5, 1.05], [6.8, 40.5, 1.05],
       [-21.5, -3, 1.2], [21.5, -3, 1.2]
     ];
     cherries.forEach(([x, z, sc], i) => this.buildCherryTree(x, z, sc, 101 + i * 37));
 
-    // Tùng tạo dáng tầng mây hai bên cổng trong
-    this.buildCloudPine(-9, 33, 1.0, 11);
-    this.buildCloudPine(9, 33, 1.0, 23);
+    // Tùng tạo dáng tầng mây ở hai góc trong cổng (đứng sau bia công đức, không che mặt bia)
+    this.buildCloudPine(-16.5, 33.5, 1.0, 11);
+    this.buildCloudPine(16.5, 33.5, 1.0, 23);
 
     // Dây đèn lồng đỏ giăng ngang lối đi chính
     for (const z of [4, 12, 20, 28.5]) this.buildLanternString(z);
@@ -4128,6 +4337,7 @@ export class TempleWorld {
   // ===================== TICK HOẠT HỌA =====================
   public update(delta: number, elapsed: number) {
     this.updateSkyLanterns(delta, elapsed);
+    this.updateWishes(delta, elapsed);
     // 1. Mây trôi chậm rãi trên bầu trời
     if (this.cloudsGroup) {
       for (const cl of this.cloudsGroup.children) {
