@@ -592,8 +592,8 @@ export default function App() {
       }
 
       // ban đêm toả sáng mạnh, ban ngày chỉ nhẹ để không chói
-      bloom.strength = world.isNight ? 0.5 : 0.15;
-      bloom.threshold = world.isNight ? 0.82 : 0.95;
+      bloom.strength = world.isNight ? 0.35 : 0.12;
+      bloom.threshold = world.isNight ? 0.88 : 0.95;
       composer.render(delta);
       frameId = requestAnimationFrame(tick);
     };
