@@ -13,6 +13,7 @@ interface EntranceScreenProps {
   stats: OverallStats;
   onEnter: (data: { name: string; robe: RobeColor; style: AvatarStyle; roomId?: string }) => void;
   onCreateRoom: (name?: string) => Promise<any>;
+  onOpenAdmin?: () => void;
 }
 
 export const EntranceScreen: React.FC<EntranceScreenProps> = ({
@@ -23,7 +24,8 @@ export const EntranceScreen: React.FC<EntranceScreenProps> = ({
   rooms,
   stats,
   onEnter,
-  onCreateRoom
+  onCreateRoom,
+  onOpenAdmin
 }) => {
   const [name, setName] = useState(initialName || 'Phật tử');
   const [robe, setRobe] = useState<RobeColor>(initialRobe || 'blue');
@@ -275,6 +277,17 @@ export const EntranceScreen: React.FC<EntranceScreenProps> = ({
           >
             <span>🙏 Vào Chùa Chiêm Bái</span>
           </button>
+          {onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              title="Quản trị chùa"
+              aria-label="Quản trị chùa"
+              className="py-3 px-4 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 transition cursor-pointer flex items-center justify-center"
+            >
+              🛡️
+            </button>
+          )}
         </div>
 
         {/* Lưu ý nhỏ */}
