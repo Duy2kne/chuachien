@@ -14,6 +14,7 @@ export type ActionType =
   | 'bell'         // Thỉnh chuông
   | 'drum'         // Đánh trống
   | 'lantern'      // Thả đèn hoa đăng
+  | 'wish'         // Buộc dải lụa cầu duyên lên Cây Đa
   | 'sweep'        // Quét lá đa
   | 'kitchen'      // Phụ bếp: đi vào bếp trai đường (chỉ ở giao diện, không gửi server)
   | 'take_plate'   // Lấy đĩa từ chồng đĩa đặt lên quầy
@@ -104,6 +105,15 @@ export interface LanternItem {
   playerName: string;
 }
 
+// Dải lụa đỏ cầu duyên buộc trên Cây Đa (slot = chỗ trên cành, 0..59)
+export interface WishItem {
+  id: string;
+  slot: number;
+  text: string;
+  createdAt: number;
+  playerName: string;
+}
+
 export interface ChatMessage {
   id: string;
   playerId: string;
@@ -123,5 +133,6 @@ export interface OverallStats {
   drumCount: number;
   sweepCount?: number;
   servedCount?: number;
+  wishCount?: number;
   totalMerit?: number;
 }
