@@ -272,6 +272,11 @@ export class TempleWorld {
   private cloudsGroup: THREE.Group | null = null;
   private starsPoints: THREE.Points | null = null;
   private moonGroup: THREE.Group | null = null;
+  // Đèn trời (đèn khổng minh) bay lơ lửng ban đêm
+  private skyLanternMesh: THREE.InstancedMesh | null = null;
+  private skyLanternGlow: THREE.Points | null = null;
+  private skyLanternData: { a: number; r: number; y: number; speed: number; sway: number; phase: number; s: number }[] = [];
+  private skyLanternDummy = new THREE.Object3D();
   private buddhaHalo: THREE.Mesh | null = null;
 
   // Khói hương tròn mờ
@@ -405,7 +410,9 @@ export class TempleWorld {
         topColor: { value: new THREE.Color(0x6fa8dc) },    // Xanh thiên thanh
         bottomColor: { value: new THREE.Color(0xf3e6cc) }, // Chân trời vàng nhạt pha sương
         offset: { value: 20.0 },
-        exponent: { value: 0.65 }
+        exponent: { value: 0.65 },
+        glowColor: { value: new THREE.Color(0xe7a3c0) },
+        glowStrength: { value: 0.0 }
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -420,10 +427,16 @@ export class TempleWorld {
         uniform vec3 bottomColor;
         uniform float offset;
         uniform float exponent;
+        uniform vec3 glowColor;
+        uniform float glowStrength;
         varying vec3 vWorldPosition;
         void main() {
           float h = normalize(vWorldPosition + offset).y;
-          gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+          vec3 col = mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0));
+          // dải hồng tím sát chân trời
+          float band = pow(1.0 - clamp(abs(h - 0.04) * 2.6, 0.0, 1.0), 3.0);
+          col = mix(col, glowColor, band * glowStrength);
+          gl_FragColor = vec4(col, 1.0);
           #include <colorspace_fragment>
         }
       `,
@@ -519,6 +532,90 @@ export class TempleWorld {
     );
     this.starsPoints.visible = false;
     this.scene.add(this.starsPoints);
+
+    this.buildSkyLanterns();
+  }
+
+  // Đèn trời: vài chục chiếc đèn giấy cam bay chậm lên quanh chùa, chỉ hiện ban đêm
+  private buildSkyLanterns() {
+    const count = 60;
+    const body = new THREE.CylinderGeometry(0.62, 0.46, 1.25, 8, 1);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffb35c, fog: false });
+    this.skyLanternMesh = new THREE.InstancedMesh(body, mat, count);
+    this.skyLanternMesh.frustumCulled = false;
+    const colors = [0xffb35c, 0xffc46e, 0xff9f4a, 0xffd08a];
+    const c = new THREE.Color();
+    for (let i = 0; i < count; i++) {
+      const near = i < 22; // một nhóm bay gần sân chùa cho dễ thấy
+      this.skyLanternData.push({
+        a: Math.random() * Math.PI * 2,
+        r: near ? 20 + Math.random() * 28 : 50 + Math.random() * 90,
+        y: 6 + Math.random() * 70,
+        speed: 0.4 + Math.random() * 0.6,
+        sway: 0.6 + Math.random() * 1.6,
+        phase: Math.random() * Math.PI * 2,
+        s: near ? 0.75 + Math.random() * 0.35 : 1.1 + Math.random() * 0.8
+      });
+      this.skyLanternMesh.setColorAt(i, c.setHex(colors[i % colors.length]));
+    }
+    this.skyLanternMesh.visible = false;
+    this.scene.add(this.skyLanternMesh);
+
+    // quầng sáng cam quanh mỗi đèn
+    const glowGeo = new THREE.BufferGeometry();
+    glowGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    const gc = document.createElement('canvas');
+    gc.width = gc.height = 64;
+    const g = gc.getContext('2d')!;
+    const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,220,150,1)');
+    gr.addColorStop(0.25, 'rgba(255,170,80,0.55)');
+    gr.addColorStop(1, 'rgba(255,140,60,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, 64, 64);
+    this.skyLanternGlow = new THREE.Points(
+      glowGeo,
+      new THREE.PointsMaterial({
+        map: new THREE.CanvasTexture(gc),
+        size: 10,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false
+      })
+    );
+    this.skyLanternGlow.frustumCulled = false;
+    this.skyLanternGlow.visible = false;
+    this.scene.add(this.skyLanternGlow);
+    this.updateSkyLanterns(0, 0);
+  }
+
+  private updateSkyLanterns(delta: number, elapsed: number) {
+    if (!this.skyLanternMesh || !this.skyLanternGlow || !this.skyLanternMesh.visible) return;
+    const d = this.skyLanternDummy;
+    const pos = this.skyLanternGlow.geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < this.skyLanternData.length; i++) {
+      const L = this.skyLanternData[i];
+      L.y += delta * L.speed;
+      if (L.y > 85) {
+        L.y = 6;
+        L.a = Math.random() * Math.PI * 2;
+      }
+      const x = Math.cos(L.a) * L.r + Math.sin(elapsed * 0.25 + L.phase) * L.sway;
+      const z = Math.sin(L.a) * L.r + Math.cos(elapsed * 0.2 + L.phase) * L.sway;
+      // lên cao thì nhỏ dần như đèn bay xa
+      const fade = L.y > 70 ? Math.max(0.05, (85 - L.y) / 15) : 1;
+      d.position.set(x, L.y, z);
+      d.rotation.set(Math.sin(elapsed * 0.8 + L.phase) * 0.08, elapsed * 0.1 + L.phase, 0);
+      d.scale.setScalar(L.s * fade);
+      d.updateMatrix();
+      this.skyLanternMesh.setMatrixAt(i, d.matrix);
+      pos.setXYZ(i, x, L.y + 0.05, z);
+    }
+    this.skyLanternMesh.instanceMatrix.needsUpdate = true;
+    pos.needsUpdate = true;
   }
 
   // ===================== 3. NÚI NON LOW-POLY HÒA VÀO SƯƠNG =====================
@@ -2346,22 +2443,27 @@ export class TempleWorld {
     if (!this.sunLight || !this.hemiLight || !this.skyMaterial) return;
 
     if (night) {
-      // Đêm trăng: gradient #0b1026 -> #2a2f5a
-      this.skyMaterial.uniforms.topColor.value.setHex(0x0b1026);
-      this.skyMaterial.uniforms.bottomColor.value.setHex(0x2a2f5a);
+      // Đêm: trời hoàng hôn tím (đỉnh chàm -> chân trời tím hồng), sáng dịu chứ không tối đen
+      this.skyMaterial.uniforms.topColor.value.setHex(0x17153f);
+      this.skyMaterial.uniforms.bottomColor.value.setHex(0x6a4a8c);
+      this.skyMaterial.uniforms.glowColor.value.setHex(0xf0a9c4);
+      this.skyMaterial.uniforms.glowStrength.value = 0.75;
+      this.skyMaterial.uniforms.exponent.value = 0.55;
 
-      this.sunLight.color.setHex(0x5c7cfa);
-      this.sunLight.intensity = 0.5;
+      this.sunLight.color.setHex(0xa9b2ff);
+      this.sunLight.intensity = 0.55;
       this.sunLight.position.set(-35, 30, -35);
 
-      this.hemiLight.color.setHex(0x2a2f5a);
-      this.hemiLight.groundColor.setHex(0x0a101d);
-      this.hemiLight.intensity = 0.45;
-      this.scene.environmentIntensity = 0.12;
-      this.scene.fog = new THREE.Fog(0x161c36, Math.min(60, this.theme.fog.near), Math.min(300, this.theme.fog.far));
+      this.hemiLight.color.setHex(0x8577c4);
+      this.hemiLight.groundColor.setHex(0x241a36);
+      this.hemiLight.intensity = 0.62;
+      this.scene.environmentIntensity = 0.15;
+      this.scene.fog = new THREE.Fog(0x4a3a6e, Math.min(60, this.theme.fog.near), Math.min(320, this.theme.fog.far));
 
       if (this.starsPoints) this.starsPoints.visible = true;
       if (this.moonGroup) this.moonGroup.visible = true;
+      if (this.skyLanternMesh) this.skyLanternMesh.visible = true;
+      if (this.skyLanternGlow) this.skyLanternGlow.visible = true;
 
       // Đèn lồng, đèn đá, nến chuyển sang emissive ấm (#ffb347), tăng sáng
       for (const pl of this.nightLights) pl.intensity = 1.8;
@@ -2372,6 +2474,8 @@ export class TempleWorld {
       const th = this.theme;
       this.skyMaterial.uniforms.topColor.value.setHex(th.sky.top);
       this.skyMaterial.uniforms.bottomColor.value.setHex(th.sky.bottom);
+      this.skyMaterial.uniforms.glowStrength.value = 0;
+      this.skyMaterial.uniforms.exponent.value = 0.65;
 
       this.sunLight.color.setHex(th.sun.color);
       this.sunLight.intensity = th.sun.intensity;
@@ -2385,6 +2489,8 @@ export class TempleWorld {
 
       if (this.starsPoints) this.starsPoints.visible = false;
       if (this.moonGroup) this.moonGroup.visible = false;
+      if (this.skyLanternMesh) this.skyLanternMesh.visible = false;
+      if (this.skyLanternGlow) this.skyLanternGlow.visible = false;
 
       for (const pl of this.nightLights) pl.intensity = 0.3;
       for (const pl of this.lanternsGlow) pl.intensity = 0.15;
@@ -3311,6 +3417,7 @@ export class TempleWorld {
 
   // ===================== TICK HOẠT HỌA =====================
   public update(delta: number, elapsed: number) {
+    this.updateSkyLanterns(delta, elapsed);
     // 1. Mây trôi chậm rãi trên bầu trời
     if (this.cloudsGroup) {
       for (const cl of this.cloudsGroup.children) {
