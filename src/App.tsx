@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { TempleWorld } from './scene/templeWorld.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
@@ -511,6 +515,25 @@ export default function App() {
     const world = new TempleWorld(scene);
     worldRef.current = world;
     world.setDayNight(isNight);
+    // Chỉ khi chạy dev: cho script kiểm tra giao diện điều khiển camera
+    if (import.meta.env.DEV) (window as any).__chua = { scene, camera, world };
+
+    // Hiệu ứng toả sáng (bloom): đèn lồng, đèn đá, trăng, đèn trời có quầng sáng lung linh
+    const composer = new EffectComposer(renderer);
+    if (!isMobile) {
+      composer.renderTarget1.samples = 4; // khử răng cưa trên máy tính
+      composer.renderTarget2.samples = 4;
+    }
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(container.clientWidth, container.clientHeight), 0.5, 0.45, 0.82);
+    if (isMobile) {
+      // điện thoại: tính bloom ở nửa độ phân giải cho nhẹ máy
+      const setBloomSize = bloom.setSize.bind(bloom);
+      bloom.setSize = (w: number, h: number) => setBloomSize(Math.max(2, w * 0.5), Math.max(2, h * 0.5));
+    }
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+    composer.setSize(container.clientWidth, container.clientHeight);
 
     // 5. Vòng lặp Render (Animation loop)
     let frameId = 0;
@@ -568,7 +591,10 @@ export default function App() {
         other.update(delta, elapsed);
       }
 
-      renderer.render(scene, camera);
+      // ban đêm toả sáng mạnh, ban ngày chỉ nhẹ để không chói
+      bloom.strength = world.isNight ? 0.5 : 0.15;
+      bloom.threshold = world.isNight ? 0.82 : 0.95;
+      composer.render(delta);
       frameId = requestAnimationFrame(tick);
     };
 
@@ -581,12 +607,14 @@ export default function App() {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      composer.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
       cancelAnimationFrame(frameId);
       window.removeEventListener('resize', handleResize);
+      composer.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
