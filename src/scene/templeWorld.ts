@@ -15,6 +15,58 @@ import type { IncenseItem, FlowerItem, LanternItem, LeafPile } from '../types.js
 import { DEFAULT_THEME, type TempleTheme } from './themes.js';
 import { DINING, traySlot, type TrayItem } from '../shared/dining.js';
 
+// Số ngẫu nhiên có hạt giống: mọi người chơi thấy cây giống hệt nhau
+function seeded(seed: number) {
+  let v = seed % 2147483647;
+  if (v <= 0) v += 2147483646;
+  return () => {
+    v = (v * 16807) % 2147483647;
+    return (v - 1) / 2147483646;
+  };
+}
+
+let _warmGlowTex: THREE.CanvasTexture | null = null;
+function warmGlowTexture() {
+  if (_warmGlowTex) return _warmGlowTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d')!;
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,214,150,1)');
+  gr.addColorStop(0.3, 'rgba(255,170,90,0.5)');
+  gr.addColorStop(1, 'rgba(255,140,60,0)');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 128, 128);
+  _warmGlowTex = new THREE.CanvasTexture(c);
+  return _warmGlowTex;
+}
+
+let _petalCarpetTex: THREE.CanvasTexture | null = null;
+function petalCarpetTexture() {
+  if (_petalCarpetTex) return _petalCarpetTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d')!;
+  const rnd = seeded(77);
+  const cols = ['#f7b6cf', '#f29bbd', '#fbd3e2', '#e98aae', '#ffe4ee'];
+  for (let i = 0; i < 520; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = Math.pow(rnd(), 0.75) * 118;
+    g.save();
+    g.translate(128 + Math.cos(a) * r, 128 + Math.sin(a) * r);
+    g.rotate(rnd() * Math.PI);
+    g.globalAlpha = 0.95 - (r / 118) * 0.6;
+    g.fillStyle = cols[i % cols.length];
+    g.beginPath();
+    g.ellipse(0, 0, 3.4, 2, 0, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+  }
+  _petalCarpetTex = new THREE.CanvasTexture(c);
+  _petalCarpetTex.colorSpace = THREE.SRGBColorSpace;
+  return _petalCarpetTex;
+}
+
 export interface CollisionBox {
   minX: number;
   maxX: number;
@@ -277,6 +329,15 @@ export class TempleWorld {
   private skyLanternGlow: THREE.Points | null = null;
   private skyLanternData: { a: number; r: number; y: number; speed: number; sway: number; phase: number; s: number }[] = [];
   private skyLanternDummy = new THREE.Object3D();
+  // Chi tiết trang trí chỉ hiện ban đêm (vũng sáng dưới đèn, quầng đèn lồng)
+  private nightOnly: THREE.Object3D[] = [];
+  // Mặt nước hồ: ban đêm bớt bóng để ánh trăng phản chiếu không loá
+  private waterMats: THREE.MeshStandardMaterial[] = [];
+  private waterMat(m: THREE.MeshStandardMaterial) {
+    this.waterMats.push(m);
+    m.roughness = this.isNight ? 0.38 : 0.1;
+    return m;
+  }
   private buddhaHalo: THREE.Mesh | null = null;
 
   // Khói hương tròn mờ
@@ -343,6 +404,7 @@ export class TempleWorld {
     this.buildPerimeterWalls();
     this.buildDecorationsAndBonsai();
     this.buildMeritStele();
+    this.buildBeautyDetails();
     this.setupSmokeAndPetals();
     this.enableShadows();
     this.buildDiningHall();
@@ -1973,7 +2035,7 @@ export class TempleWorld {
 
     const water = new THREE.Mesh(
       new THREE.CylinderGeometry(7.5, 7.5, 0.4, 24),
-      new THREE.MeshStandardMaterial({ color: 0x1d5d6e, roughness: 0.1, metalness: 0.65, transparent: true, opacity: 0.88 })
+      this.waterMat(new THREE.MeshStandardMaterial({ color: 0x1d5d6e, roughness: 0.1, metalness: 0.65, transparent: true, opacity: 0.88 }))
     );
     water.position.y = -0.15;
     pond.add(water);
@@ -2129,7 +2191,7 @@ export class TempleWorld {
     // Hào quang sau đầu
     const qaHalo = new THREE.Mesh(
       new THREE.PlaneGeometry(1.1, 1.1),
-      new THREE.MeshBasicMaterial({ map: createHaloTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.7 })
+      new THREE.MeshBasicMaterial({ map: createHaloTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.38 })
     );
     qaHalo.position.set(0, 2.38, -0.28);
     quanAmGroup.add(qaHalo);
@@ -2265,6 +2327,242 @@ export class TempleWorld {
 
       this.collisionBoxes.push({ minX: tc.x - 0.6, maxX: tc.x + 0.6, minZ: tc.z - 0.6, maxZ: tc.z + 0.6, type: 'impassable' });
     }
+  }
+
+  // ===================== CHI TIẾT LÀM ĐẸP: HOA ANH ĐÀO, TÙNG, DÂY ĐÈN LỒNG, VŨNG SÁNG ĐÊM =====================
+  private buildBeautyDetails() {
+    // Cây hoa anh đào tán hồng (x, z, độ to)
+    const cherries: [number, number, number][] = [
+      [-14.5, 0, 1.1], [14.5, 0, 1.1],
+      [12.5, 13.5, 1.0], [-10.5, 19, 0.95],
+      [11.5, 24.5, 0.95],
+      [-6.8, 40.5, 1.05], [6.8, 40.5, 1.05],
+      [-21.5, -3, 1.2], [21.5, -3, 1.2]
+    ];
+    cherries.forEach(([x, z, sc], i) => this.buildCherryTree(x, z, sc, 101 + i * 37));
+
+    // Tùng tạo dáng tầng mây hai bên cổng trong
+    this.buildCloudPine(-9, 33, 1.0, 11);
+    this.buildCloudPine(9, 33, 1.0, 23);
+
+    // Dây đèn lồng đỏ giăng ngang lối đi chính
+    for (const z of [4, 12, 20, 28.5]) this.buildLanternString(z);
+
+    // Vũng sáng ấm dưới chân đèn đá (chỉ ban đêm)
+    for (const [x, z] of [[-3.8, 8], [3.8, 8], [-3.8, 24], [3.8, 24]]) this.addLightPool(x, z, 2.6, 0.55);
+    for (const z of [4, 12, 20, 28.5]) this.addLightPool(0, z, 3.0, 0.22);
+    this.addLightPool(0, -2.2, 4.2, 0.35);
+  }
+
+  private makeLimb(a: THREE.Vector3, b: THREE.Vector3, r0: number, r1: number) {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const len = dir.length();
+    const g = new THREE.CylinderGeometry(r1, r0, len, 7, 1);
+    g.translate(0, len / 2, 0);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
+    g.translate(a.x, a.y, a.z);
+    return g;
+  }
+
+  private cherryMats: { bark: THREE.MeshStandardMaterial; bloom: THREE.MeshStandardMaterial; carpet: THREE.MeshBasicMaterial } | null = null;
+
+  private buildCherryTree(x: number, z: number, scale: number, seed: number) {
+    const rnd = seeded(seed);
+    if (!this.cherryMats) {
+      this.cherryMats = {
+        bark: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true }),
+        bloom: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true, emissive: 0x6a2448, emissiveIntensity: 0.22 }),
+        carpet: new THREE.MeshBasicMaterial({ map: petalCarpetTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+      };
+    }
+    const V = (a: number, b: number, c: number) => new THREE.Vector3(a, b, c);
+    const bark: { geo: THREE.BufferGeometry; color: number }[] = [];
+    const puffs: { geo: THREE.BufferGeometry; color: number }[] = [];
+    const BARK = 0x4a3328;
+    const PINKS = [0xf7b6cf, 0xf29bbd, 0xfbcfe0, 0xec90b3, 0xffd9e6];
+
+    // thân cong + gốc loe
+    const lean = V((rnd() - 0.5) * 0.5, 0, (rnd() - 0.5) * 0.5);
+    const top = V(lean.x, 1.75, lean.z);
+    bark.push({ geo: this.makeLimb(V(0, 0, 0), V(lean.x * 0.4, 0.9, lean.z * 0.4), 0.36, 0.27), color: BARK });
+    bark.push({ geo: this.makeLimb(V(lean.x * 0.4, 0.9, lean.z * 0.4), top, 0.27, 0.22), color: BARK });
+    bark.push({ geo: new THREE.ConeGeometry(0.55, 0.45, 7).translate(0, 0.2, 0), color: 0x3d2a20 });
+
+    // các cành toả ra, đầu cành là chùm hoa
+    const nBranch = 4 + Math.floor(rnd() * 2);
+    const tips: THREE.Vector3[] = [];
+    for (let i = 0; i < nBranch; i++) {
+      const a = (i / nBranch) * Math.PI * 2 + rnd() * 0.6;
+      const reach = 1.4 + rnd() * 0.7;
+      const mid = V(top.x + Math.cos(a) * reach * 0.5, top.y + 0.7 + rnd() * 0.3, top.z + Math.sin(a) * reach * 0.5);
+      const tip = V(top.x + Math.cos(a) * reach, top.y + 1.1 + rnd() * 0.7, top.z + Math.sin(a) * reach);
+      bark.push({ geo: this.makeLimb(top, mid, 0.17, 0.12), color: BARK });
+      bark.push({ geo: this.makeLimb(mid, tip, 0.12, 0.06), color: BARK });
+      tips.push(tip);
+    }
+    tips.push(V(top.x, top.y + 2.3, top.z));
+
+    const addPuff = (c: THREE.Vector3, r: number) => {
+      const g = new THREE.IcosahedronGeometry(r, 1);
+      g.scale(1, 0.78, 1);
+      g.rotateY(rnd() * Math.PI);
+      g.translate(c.x, c.y, c.z);
+      puffs.push({ geo: g, color: PINKS[Math.floor(rnd() * PINKS.length)] });
+    };
+    for (const t of tips) {
+      addPuff(t, 0.85 + rnd() * 0.35);
+      // chùm nhỏ phụ quanh mỗi đầu cành cho tán dày
+      for (let k = 0; k < 2; k++) {
+        const a = rnd() * Math.PI * 2;
+        addPuff(V(t.x + Math.cos(a) * 0.7, t.y - 0.25 + rnd() * 0.4, t.z + Math.sin(a) * 0.7), 0.5 + rnd() * 0.25);
+      }
+    }
+    // lõi tán
+    addPuff(V(top.x, top.y + 1.5, top.z), 1.15);
+
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(this.mergeColoredParts(bark), this.cherryMats.bark));
+    const crown = new THREE.Mesh(this.mergeColoredParts(puffs), this.cherryMats.bloom);
+    group.add(crown);
+    group.scale.setScalar(scale);
+    group.rotation.y = rnd() * Math.PI * 2;
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+
+    // thảm cánh hoa rụng dưới gốc
+    const carpet = new THREE.Mesh(new THREE.CircleGeometry(2.9 * scale, 28), this.cherryMats.carpet);
+    carpet.rotation.x = -Math.PI / 2;
+    carpet.position.set(x, 0.045, z);
+    carpet.renderOrder = 1;
+    this.scene.add(carpet);
+
+    this.collisionCircles.push({ x, z, r: 0.55 * scale });
+  }
+
+  private buildCloudPine(x: number, z: number, scale: number, seed: number) {
+    const rnd = seeded(seed);
+    const V = (a: number, b: number, c: number) => new THREE.Vector3(a, b, c);
+    const parts: { geo: THREE.BufferGeometry; color: number }[] = [];
+    const BARK = 0x5a4434;
+    const pts = [V(0, 0, 0), V(0.35, 1.1, 0.05), V(-0.25, 2.1, -0.05), V(0.2, 3.0, 0.05), V(0, 3.7, 0)];
+    for (let i = 0; i < pts.length - 1; i++) parts.push({ geo: this.makeLimb(pts[i], pts[i + 1], 0.3 - i * 0.05, 0.25 - i * 0.05), color: BARK });
+    parts.push({ geo: new THREE.ConeGeometry(0.5, 0.4, 7).translate(0, 0.18, 0), color: 0x4a382b });
+    const pads = [
+      { from: pts[1], to: V(1.35, 1.55, 0.25), r: 0.95, c: 0x2f5d3a },
+      { from: pts[2], to: V(-1.3, 2.35, -0.2), r: 0.9, c: 0x346a40 },
+      { from: pts[3], to: V(1.0, 3.05, -0.35), r: 0.8, c: 0x3c7a4a },
+      { from: pts[4], to: V(0, 3.85, 0), r: 1.0, c: 0x458654 }
+    ];
+    for (const pd of pads) {
+      if (pd.from !== pts[4]) parts.push({ geo: this.makeLimb(pd.from, pd.to, 0.1, 0.07), color: BARK });
+      // mỗi tầng: 1 đĩa lá dẹt to + vài cụm nhỏ viền quanh
+      const g = new THREE.SphereGeometry(pd.r, 14, 8);
+      g.scale(1.15, 0.42, 1.0);
+      g.translate(pd.to.x, pd.to.y + 0.12, pd.to.z);
+      parts.push({ geo: g, color: pd.c });
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2 + rnd();
+        const sg = new THREE.SphereGeometry(pd.r * 0.42, 10, 6);
+        sg.scale(1, 0.6, 1);
+        sg.translate(pd.to.x + Math.cos(a) * pd.r * 0.85, pd.to.y + 0.1, pd.to.z + Math.sin(a) * pd.r * 0.75);
+        parts.push({ geo: sg, color: k % 2 ? pd.c : 0x2a5234 });
+      }
+    }
+    const mesh = new THREE.Mesh(
+      this.mergeColoredParts(parts),
+      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true })
+    );
+    mesh.scale.setScalar(scale);
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = rnd() * Math.PI * 2;
+    this.scene.add(mesh);
+    this.collisionCircles.push({ x, z, r: 0.6 * scale });
+  }
+
+  private redLanternMat: THREE.MeshStandardMaterial | null = null;
+  private lanternStringMats: { pole: THREE.MeshStandardMaterial; rope: THREE.MeshStandardMaterial; red: THREE.MeshStandardMaterial; gold: THREE.MeshStandardMaterial } | null = null;
+
+  // Hai cột gỗ sơn son hai bên lối đi + dây võng với 7 đèn lồng đỏ
+  private buildLanternString(z: number) {
+    if (!this.lanternStringMats) {
+      const red = new THREE.MeshStandardMaterial({ color: 0xc81e16, roughness: 0.55, emissive: 0xe0200c, emissiveIntensity: 0.3 });
+      this.redLanternMat = red;
+      this.lanternStringMats = {
+        pole: new THREE.MeshStandardMaterial({ color: 0x7a1d14, roughness: 0.6 }),
+        rope: new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 }),
+        red,
+        gold: new THREE.MeshStandardMaterial({ color: 0xd9a63a, roughness: 0.35, metalness: 0.6 })
+      };
+    }
+    const M = this.lanternStringMats;
+    const X = 4.7;
+    const H = 5.0;
+    const group = new THREE.Group();
+    for (const sx of [-X, X]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, H + 0.2, 10), M.pole);
+      pole.position.set(sx, (H + 0.2) / 2, 0);
+      group.add(pole);
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.22, 10), new THREE.MeshStandardMaterial({ color: 0x8c877c, roughness: 0.9 }));
+      base.position.set(sx, 0.11, 0);
+      group.add(base);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), M.gold);
+      cap.position.set(sx, H + 0.25, 0);
+      group.add(cap);
+      this.collisionCircles.push({ x: sx, z, r: 0.28 });
+    }
+    // dây võng (catenary đơn giản)
+    const sag = 0.75;
+    const curve = new THREE.CatmullRomCurve3(
+      Array.from({ length: 9 }, (_, i) => {
+        const t = i / 8;
+        return new THREE.Vector3(-X + 2 * X * t, H - sag * 4 * t * (1 - t), 0);
+      })
+    );
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.018, 4, false), M.rope));
+
+    const glowMat = new THREE.SpriteMaterial({ map: warmGlowTexture(), color: 0xff5a2a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.38 });
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      const t = (i + 1) / (n + 1);
+      const p = curve.getPoint(t);
+      const L = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), M.red);
+      body.scale.set(1, 1.2, 1);
+      L.add(body);
+      for (const cy of [0.27, -0.27]) {
+        const capM = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 10), M.gold);
+        capM.position.y = cy;
+        L.add(capM);
+      }
+      const tassel = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.05, 0.28, 6), M.gold);
+      tassel.position.y = -0.45;
+      L.add(tassel);
+      const glow = new THREE.Sprite(glowMat);
+      glow.scale.set(1.15, 1.15, 1);
+      L.add(glow);
+      this.nightOnly.push(glow);
+      L.position.set(p.x, p.y - 0.42, 0);
+      group.add(L);
+    }
+    group.position.set(0, 0, z);
+    this.scene.add(group);
+  }
+
+  private lightPoolMat: THREE.MeshBasicMaterial | null = null;
+  private addLightPool(x: number, z: number, r: number, opacity: number) {
+    if (!this.lightPoolMat) {
+      this.lightPoolMat = new THREE.MeshBasicMaterial({
+        map: warmGlowTexture(), color: 0xffb066, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
+      });
+    }
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), this.lightPoolMat.clone());
+    (m.material as THREE.MeshBasicMaterial).opacity = opacity;
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(x, 0.06, z);
+    m.renderOrder = 2;
+    this.scene.add(m);
+    this.nightOnly.push(m);
   }
 
   // Tường rào bao quanh chùa & Hàng cau/dừa nhiệt đới (như trong ảnh mẫu)
@@ -2440,6 +2738,9 @@ export class TempleWorld {
   // ===================== CHẾ ĐỘ NGÀY / ĐÊM =====================
   public setDayNight(night: boolean) {
     this.isNight = night;
+    for (const o of this.nightOnly) o.visible = night;
+    if (this.redLanternMat) this.redLanternMat.emissiveIntensity = night ? 0.75 : 0.3;
+    for (const m of this.waterMats) m.roughness = night ? 0.38 : 0.1;
     if (!this.sunLight || !this.hemiLight || !this.skyMaterial) return;
 
     if (night) {
@@ -3027,7 +3328,7 @@ export class TempleWorld {
     const group = new THREE.Group();
     const water = new THREE.Mesh(
       new THREE.CylinderGeometry(4, 4, 0.3, 32),
-      new THREE.MeshStandardMaterial({ color: 0x1d5d6e, roughness: 0.1, metalness: 0.6, transparent: true, opacity: 0.88 })
+      this.waterMat(new THREE.MeshStandardMaterial({ color: 0x1d5d6e, roughness: 0.1, metalness: 0.6, transparent: true, opacity: 0.88 }))
     );
     water.position.y = -0.1;
     group.add(water);
@@ -3290,8 +3591,10 @@ export class TempleWorld {
   private mergeColoredParts(parts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix?: THREE.Matrix4 }[]): THREE.BufferGeometry {
     const tmpColor = new THREE.Color();
     const pieces: THREE.BufferGeometry[] = [];
+    const mixed = parts.some(pt => pt.geo.index) && parts.some(pt => !pt.geo.index);
     for (const part of parts) {
-      const g = part.geo;
+      const g = mixed && part.geo.index ? part.geo.toNonIndexed() : part.geo;
+      if (g !== part.geo) part.geo.dispose();
       if (part.matrix) g.applyMatrix4(part.matrix);
       tmpColor.set(part.color);
       const count = g.attributes.position.count;
