@@ -1333,7 +1333,27 @@ async function startServer() {
   httpServer.listen(PORT, HOST, () => {
     console.log(`🙏 Chùa Online 3D đang phụng sự tại http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     console.log(`[Chế độ: ${isProd ? 'Production' : 'Development'} | Max/phòng: ${MAX_PER_ROOM}]`);
+    startKeepAlive();
   });
+}
+
+// Render bản miễn phí cho server "ngủ" sau 15 phút không có ai truy cập.
+// Server tự gọi /health của chính nó mỗi 10 phút để luôn thức.
+// Trên Render tự có RENDER_EXTERNAL_URL; nơi khác đặt KEEP_ALIVE_URL. KEEP_ALIVE=off để tắt.
+function startKeepAlive() {
+  const base = (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+  if (!base || process.env.KEEP_ALIVE === 'off') return;
+  const url = `${base}/health`;
+  const ping = async () => {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': 'chua-keep-alive' }, signal: AbortSignal.timeout(20000) });
+      if (!res.ok) console.warn(`[KeepAlive] ${url} -> ${res.status}`);
+    } catch (e: any) {
+      console.warn(`[KeepAlive] Không gọi được ${url}: ${e?.message || e}`);
+    }
+  };
+  setInterval(ping, 10 * 60 * 1000);
+  console.log(`[KeepAlive] Tự gọi ${url} mỗi 10 phút để server không ngủ`);
 }
 
 // Graceful shutdown
