@@ -16,8 +16,12 @@ const QUICK_PHRASES = [
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage }) => {
   const [text, setText] = useState('');
-  // Mặc định trên màn hình nhỏ thu gọn thành nút 💬, trên desktop mở sẵn
-  const [isOpen, setIsOpen] = useState(() => typeof window !== 'undefined' ? window.innerWidth > 640 : true);
+  // Điện thoại / máy cảm ứng / màn thấp: thu gọn thành nút 💬 để không che cảnh; máy tính màn to thì mở sẵn
+  const [isOpen, setIsOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const coarse = window.matchMedia?.('(pointer: coarse)').matches;
+    return !coarse && window.innerWidth > 900 && window.innerHeight > 560;
+  });
   const [bottomOffset, setBottomOffset] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -64,10 +68,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage })
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-24 left-4 z-20 w-12 h-12 rounded-full bg-amber-600 hover:bg-amber-500 text-stone-950 shadow-2xl flex items-center justify-center font-bold transition cursor-pointer border border-amber-300 active:scale-95"
+          style={{ top: 'calc(118px + env(safe-area-inset-top))' }}
+          className="fixed left-3 sm:left-4 z-20 w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-gradient-to-b from-stone-700/95 to-stone-950/95 border-2 border-amber-500/60 text-amber-200 shadow-[0_4px_12px_rgba(0,0,0,0.45)] flex items-center justify-center font-bold transition cursor-pointer active:scale-95"
           title="Mở trò chuyện đạo tràng"
         >
-          <span className="text-xl">💬</span>
+          <MessageSquare size={18} />
           {messages.length > 0 && (
             <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-rose-500 animate-ping" />
           )}
