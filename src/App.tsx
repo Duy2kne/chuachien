@@ -80,6 +80,14 @@ function planRoute(fromX: number, fromZ: number, toX: number, toZ: number) {
   return via;
 }
 
+// Nút tròn viền vàng trên HUD (giống nút game mobile)
+const HUD_BTN =
+  'w-9 h-9 sm:w-11 sm:h-11 items-center justify-center rounded-full bg-gradient-to-b from-stone-700/95 to-stone-950/95 border-2 border-amber-500/60 text-amber-200 shadow-[0_4px_12px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.12)] hover:border-amber-300 hover:text-amber-100 active:scale-95 transition cursor-pointer';
+
+// Máy có màn cảm ứng: luôn hiện vòng joystick ở góc trái dưới để người chơi biết chỗ chạm
+const HAS_TOUCH = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+const joystickRest = (h: number) => ({ x: 96, y: h - (h < 520 ? 150 : 210) });
+
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +146,12 @@ export default function App() {
   const [isNight, setIsNight] = useState(false);
   const [onlinePlayersList, setOnlinePlayersList] = useState<PlayerData[]>([]);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [viewH, setViewH] = useState(() => (typeof window !== 'undefined' ? window.innerHeight : 800));
+  useEffect(() => {
+    const onResize = () => setViewH(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Joystick ảo động (Dynamic Virtual Joystick)
   const [dynamicJoystick, setDynamicJoystick] = useState<{
@@ -835,7 +849,11 @@ export default function App() {
 
     if (isTouchJoystick && joystickPointerId.current === null) {
       joystickPointerId.current = e.pointerId;
-      setDynamicJoystick({ visible: true, originX: e.clientX, originY: e.clientY, knobX: 0, knobY: 0 });
+      const rest = joystickRest(window.innerHeight);
+      const nearRest = Math.hypot(e.clientX - rest.x, e.clientY - rest.y) < 90;
+      const ox = nearRest ? rest.x : e.clientX;
+      const oy = nearRest ? rest.y : e.clientY;
+      setDynamicJoystick({ visible: true, originX: ox, originY: oy, knobX: 0, knobY: 0 });
       joystickVector.current = { x: 0, y: 0, isRunning: false };
       return;
     }
@@ -1356,6 +1374,18 @@ export default function App() {
         </div>
       )}
 
+      {/* Vòng joystick nghỉ (điện thoại): chạm vào đây hoặc bất kỳ đâu nửa trái để đi */}
+      {hasEntered && HAS_TOUCH && !dynamicJoystick.visible && (
+        <div
+          className="fixed pointer-events-none z-10 -translate-x-1/2 -translate-y-1/2"
+          style={{ left: joystickRest(viewH).x, top: joystickRest(viewH).y }}
+        >
+          <div className="w-[116px] h-[116px] rounded-full bg-stone-950/30 border-2 border-amber-400/55 shadow-[0_0_18px_rgba(0,0,0,0.35),inset_0_0_16px_rgba(251,191,36,0.15)] flex items-center justify-center">
+            <div className="w-[46px] h-[46px] rounded-full bg-gradient-to-br from-amber-500/90 to-amber-800/90 border-2 border-amber-200/70 shadow-lg" />
+          </div>
+        </div>
+      )}
+
       {/* MÀN HÌNH ĐĂNG NHẬP / VÀO CHÙA */}
       {!hasEntered && (
         <EntranceScreen
@@ -1377,9 +1407,9 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowRoomModal(true)}
-              className="flex items-center gap-2 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-2xl bg-stone-900/90 hover:bg-stone-900 border border-amber-600/40 shadow-xl backdrop-blur-xs text-stone-100 transition cursor-pointer"
+              className="flex items-center gap-2 pl-1.5 pr-3.5 py-1 sm:py-1.5 rounded-full bg-gradient-to-b from-stone-700/95 to-stone-950/95 border-2 border-amber-500/60 shadow-[0_4px_12px_rgba(0,0,0,0.45)] text-stone-100 transition cursor-pointer"
             >
-              <span className="text-amber-400 font-serif text-base sm:text-lg leading-none">卍</span>
+              <span className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br from-amber-400 to-amber-700 text-stone-950 font-serif text-sm sm:text-base leading-none flex items-center justify-center shadow-inner">卍</span>
               <div className="text-left">
                 <div className="text-[11px] sm:text-xs font-serif font-bold text-amber-200 leading-tight">
                   TÂM AN TỰ
@@ -1424,7 +1454,7 @@ export default function App() {
             <div
               onClick={() => setShopTab('items')}
               title={`Công đức tích luỹ ${merit} · khả dụng ${profile.balance}`}
-              className="relative flex items-center gap-1 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-2xl bg-stone-900/90 border border-amber-600/40 shadow-xl backdrop-blur-xs text-amber-300 font-serif text-xs font-bold cursor-pointer"
+              className="relative flex items-center gap-1 h-9 sm:h-11 px-3 sm:px-4 rounded-full bg-gradient-to-b from-stone-700/95 to-stone-950/95 border-2 border-amber-500/60 shadow-[0_4px_12px_rgba(0,0,0,0.45)] text-amber-200 font-serif text-xs sm:text-sm font-bold cursor-pointer"
             >
               <Sparkles size={13} className="text-amber-400" />
               <span>{merit}</span>
@@ -1443,7 +1473,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShopTab('items')}
-              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className={`flex ${HUD_BTN}`}
               title="Đổi công đức"
             >
               <Gift size={15} />
@@ -1453,7 +1483,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowLeaderboard(true)}
-              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className={`flex ${HUD_BTN}`}
               title="Bảng công đức"
             >
               <Trophy size={15} />
@@ -1463,7 +1493,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowProfileModal(true)}
-              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className={`flex ${HUD_BTN}`}
               title="Đổi tên, màu áo"
             >
               <UserPen size={15} />
@@ -1473,7 +1503,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowAudioModal(true)}
-              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className={`flex ${HUD_BTN}`}
               title="Cài đặt âm thanh"
             >
               <Music size={15} />
@@ -1483,7 +1513,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsNight(!isNight)}
-              className="p-1.5 sm:p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-amber-300 shadow-xl transition cursor-pointer"
+              className={`flex ${HUD_BTN}`}
               title={isNight ? 'Chuyển sang ban ngày' : 'Chuyển sang ban đêm'}
             >
               {isNight ? <Sun size={15} /> : <Moon size={15} />}
@@ -1493,7 +1523,7 @@ export default function App() {
             <button
               type="button"
               onClick={toggleFullscreen}
-              className="p-2.5 rounded-2xl bg-stone-900/90 hover:bg-stone-800 border border-amber-600/40 text-stone-300 shadow-xl transition cursor-pointer hidden md:flex"
+              className={`hidden md:flex ${HUD_BTN}`}
               title="Toàn màn hình"
             >
               <Maximize2 size={15} />
@@ -1552,9 +1582,9 @@ export default function App() {
           />
 
           {/* Hướng dẫn phím di chuyển (chỉ hiện trên Desktop) */}
-          <div className="fixed bottom-1 left-4 z-10 text-[10px] text-stone-300 hidden md:block pointer-events-none drop-shadow">
+          {!isTouchDevice && <div className="fixed bottom-1 left-4 z-10 text-[10px] text-stone-300 hidden md:block pointer-events-none drop-shadow">
             WASD / Phím mũi tên: Đi lại | Giữ Shift: Chạy | Chuột kéo: Xoay | Lăn chuột: Phóng to/thu nhỏ
-          </div>
+          </div>}
         </>
       )}
 
