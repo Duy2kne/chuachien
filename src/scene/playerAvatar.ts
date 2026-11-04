@@ -22,6 +22,7 @@ export const ACTION_DURATION: Partial<Record<ActionType, number>> = {
   bell: 3.0,
   drum: 3.0,
   lantern: 3.6,
+  wish: 3.8,
   wave: 2.6,
   sweep: 3.4,
   take_plate: 1.1,
@@ -1192,6 +1193,21 @@ export class PlayerAvatar {
         p.sway = leftTurn ? 0.03 : -0.03;
         show.drumL = true;
         show.drumR = true;
+        break;
+      }
+
+      case 'wish': {
+        // Ngước lên, hai tay với lên cành đa buộc dải lụa, rồi chắp tay khấn nguyện
+        const reach = smooth(t / 0.6) * (1 - smooth((t - 2.3) / 0.5));
+        const tie = Math.sin(t * 10) * 0.18 * reach;
+        const pray = smooth((t - 2.5) / 0.4);
+        setArms(p, mixArm(ARM.idle, ARM.reachUp, reach), mixArm(ARM.idle, ARM.reachUp, reach));
+        if (pray > 0) setArms(p, mixArm(ARM.idle, ARM.pray, pray));
+        p.lsz += tie;
+        p.rsz += tie;
+        p.palms = pray;
+        p.headX = -0.32 * reach + 0.16 * pray;
+        p.eyes = pray > 0.5 ? 0 : 1;
         break;
       }
 
