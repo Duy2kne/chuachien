@@ -22,6 +22,7 @@ export type ActionType =
   | 'lift_plate'   // Bê đĩa bánh bao (đủ 3 cái) lên tay
   | 'carry'        // Đang bưng đĩa bánh bao
   | 'serve'        // Đặt đĩa bánh bao xuống bàn trai đường
+  | 'repent'       // Sám hối trước tượng Địa Tạng Bồ Tát (cảnh địa ngục)
   | 'wave';        // Vẫy chào
 
 export interface PlayerData {
@@ -47,7 +48,8 @@ export interface RoomInfo {
   count: number;
   max: number;
   isBase?: boolean;
-  theme?: string;       // Cảnh của phòng (xem src/scene/themes.ts)
+  theme?: string;       // Mùa / ánh sáng của phòng (xem src/scene/themes.ts)
+  map?: string;         // Bản đồ của phòng (xem src/shared/maps.ts)
 }
 
 // Đống lá đa rụng trên sân, quét đi để tích công đức
