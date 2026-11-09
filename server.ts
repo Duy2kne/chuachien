@@ -160,7 +160,7 @@ const BASE_ROOMS: { id: string; name: string; theme: string; map: MapId }[] = [
   { id: 'tu-bi', name: 'Từ Bi', theme: 'chieu-vang', map: 'main' },
   { id: 'hy-xa', name: 'Hỷ Xả', theme: seasonThemeId(), map: 'pagoda' },
   { id: 'an-lac', name: 'An Lạc', theme: 'dia-nguc', map: 'hell' },
-  { id: 'thanh-tinh', name: 'Thanh Tịnh', theme: 'dien-thien', map: 'zen' }
+  { id: 'thanh-tinh', name: 'Thanh Tịnh', theme: 'la-han', map: 'arhat' }
 ];
 
 const EXTRA_ROOM_NAMES = [
