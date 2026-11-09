@@ -11,6 +11,7 @@ import { getInfo } from './scene/maps/infoContent.js';
 import { getMapSpec, planRoute, isMapId, type MapId } from './shared/maps.js';
 import { InfoPanel } from './components/InfoPanel.js';
 import { MeditationGuide } from './components/MeditationGuide.js';
+import { MiniMap } from './components/MiniMap.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
@@ -1231,8 +1232,8 @@ export default function App() {
         break;
       }
       case 'meditate': {
-        // Thiền đường: tự đến bồ đoàn trống gần nhất rồi mới ngồi (bấm lại khi đang thiền thì xả thiền)
-        if (mapRef.current === 'zen' && self.currentAnim !== 'meditate') {
+        // La Hán Đường: tự đến bồ đoàn trống gần nhất rồi mới ngồi (bấm lại khi đang thiền thì xả thiền)
+        if (mapRef.current === 'arhat' && self.currentAnim !== 'meditate') {
           const c = findFreeCushion();
           if (c) spot = { x: c.x, z: c.z, ry: faceTo(c.x, c.z, spec.focus.x, spec.focus.z) };
         }
@@ -1709,8 +1710,22 @@ export default function App() {
             return info ? <InfoPanel info={info} onClose={() => setInfoClosed(infoId)} /> : null;
           })()}
 
-          {/* Thiền đường: vòng hướng dẫn hít thở khi đang ngồi thiền */}
-          {mapId === 'zen' && currentAnim === 'meditate' && <MeditationGuide />}
+          {/* La Hán Đường: vòng hướng dẫn hít thở khi đang ngồi thiền */}
+          {mapId === 'arhat' && currentAnim === 'meditate' && <MeditationGuide />}
+
+          {/* Bản đồ nhỏ (địa ngục, La Hán Đường): vị trí mình, người khác và các điểm tham quan */}
+          {getMapSpec(mapId).minimap && (
+            <MiniMap
+              key={mapId}
+              getWorld={() => worldRef.current}
+              getSelf={() => {
+                const s = selfAvatarRef.current;
+                return s ? { x: s.group.position.x, z: s.group.position.z, ry: s.group.rotation.y } : null;
+              }}
+              getOthers={() => [...otherAvatarsRef.current.values()].map(a => ({ x: a.group.position.x, z: a.group.position.z }))}
+              activeId={infoId}
+            />
+          )}
 
           {/* Hướng dẫn phím di chuyển (chỉ hiện trên Desktop) */}
           {!isTouchDevice && <div className="fixed bottom-1 left-4 z-10 text-[10px] text-stone-300 hidden md:block pointer-events-none drop-shadow">
