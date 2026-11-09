@@ -96,6 +96,54 @@ export const HELL_LEVELS: HellLevel[] = [
     advice: 'Cân đủ, đong đầy, buôn bán thật thà; không lừa người yếu thế.' }
 ];
 
+export interface Arhat {
+  n: number;
+  name: string;       // Tên Việt
+  short: string;      // Tên ngắn khắc trên biển
+  sanskrit: string;   // Tên Phạn
+  phonetic: string;   // Phiên âm Hán Việt
+  desc: string;
+}
+
+export const ARHATS: Arhat[] = [
+  { n: 1, name: 'Tọa Lộc La Hán', short: 'TỌA LỘC', sanskrit: 'Pindola Bharadvaja', phonetic: 'Tân-đầu-lô-phả-đọa',
+    desc: 'Hình tướng ngài ngồi trên lưng một con hươu một cách ung dung, tự tại.' },
+  { n: 2, name: 'Khánh Hỷ La Hán', short: 'KHÁNH HỶ', sanskrit: 'Kanakavatsa', phonetic: 'Ca-nặc-ca-phạt-tha',
+    desc: 'Vị La Hán luôn mang nụ cười hoan hỷ, tươi vui biểu thị cho cái tâm bình an.' },
+  { n: 3, name: 'Cử Bát La Hán', short: 'CỬ BÁT', sanskrit: 'Kanakabharadvaja', phonetic: 'Ca-nặc-ca-bạt-ly-đọa',
+    desc: 'Ngài thường được khắc họa với tư thế giơ cao chiếc bát hành khất ngang đầu.' },
+  { n: 4, name: 'Thác Tháp La Hán', short: 'THÁC THÁP', sanskrit: 'Subinda', phonetic: 'Tô-tần-đà',
+    desc: 'Ngài nâng một chiếc bảo tháp nhỏ trong lòng bàn tay để nhắc nhở Chánh pháp luôn hiện hữu.' },
+  { n: 5, name: 'Tĩnh Tọa La Hán', short: 'TĨNH TỌA', sanskrit: 'Nakula', phonetic: 'Nặc-cự-la',
+    desc: 'Hình tượng ngồi thiền tĩnh lặng, tượng trưng cho việc buông bỏ bạo lực để tu tập nội tâm.' },
+  { n: 6, name: 'Quá Giang La Hán', short: 'QUÁ GIANG', sanskrit: 'Bhadra', phonetic: 'Bạt-đà-la',
+    desc: 'Vị La Hán gắn liền với tích vượt sông dũng cảm để đi truyền bá Phật pháp.' },
+  { n: 7, name: 'Kỵ Tượng La Hán', short: 'KỴ TƯỢNG', sanskrit: 'Kalika', phonetic: 'Ca-lý-ca',
+    desc: 'Ngài ngồi thiền bình an trên lưng một chú voi to lớn mà ngài đã cảm hóa.' },
+  { n: 8, name: 'Tiếu Sư La Hán', short: 'TIẾU SƯ', sanskrit: 'Vajraputra', phonetic: 'Phạt-xà-la-phất-đa-la',
+    desc: 'Còn gọi là La Hán đùa với sư tử, ngài mạnh mẽ, tráng kiện và thường đi cùng một chú sư tử nhỏ.' },
+  { n: 9, name: 'Khai Tâm La Hán', short: 'KHAI TÂM', sanskrit: 'Jivaka', phonetic: 'Nhung-bác-ca',
+    desc: 'Ngài được khắc họa với tư thế vạch áo ngực để hiển lộ hình ảnh Phật ở trong tâm.' },
+  { n: 10, name: 'Thám Thủ La Hán', short: 'THÁM THỦ', sanskrit: 'Panthaka', phonetic: 'Bán-thác-ca',
+    desc: 'Ngài thường được tạc tượng với tư thế vươn hai tay lên cao, duỗi người thoải mái sau khi xả thiền.' },
+  { n: 11, name: 'Trầm Tư La Hán', short: 'TRẦM TƯ', sanskrit: 'Rahula', phonetic: 'La-hỗ-la',
+    desc: 'Ngài chính là con trai của Đức Phật Thích Ca trước khi ngài xuất gia. Tượng ngài thường ngồi cúi đầu chầm chậm ngẫm nghĩ trong định sâu.' },
+  { n: 12, name: 'Khoái Nhĩ La Hán', short: 'KHOÁI NHĨ', sanskrit: 'Nagasena', phonetic: 'Na-già-tê-na',
+    desc: 'Vị La Hán có biểu cảm vô cùng thư thái, tay cầm một chiếc que nhỏ đang ở tư thế ngoáy tai.' },
+  { n: 13, name: 'Bố Đại La Hán', short: 'BỐ ĐẠI', sanskrit: 'Angada', phonetic: 'Nhân-kiệt-đà',
+    desc: 'Ngài vốn là người bắt rắn độc bẻ răng rồi thả về rừng để cứu người, luôn mang theo một chiếc túi vải lớn sau lưng.' },
+  { n: 14, name: 'Ba Tiêu La Hán', short: 'BA TIÊU', sanskrit: 'Vanavasin', phonetic: 'Phạt-na-bà-tư',
+    desc: 'Ngài sinh ra dưới mưa rừng, sau khi đắc đạo thường thích tĩnh tọa thiền định dưới gốc cây chuối rừng.' },
+  { n: 15, name: 'Trường Mi La Hán', short: 'TRƯỜNG MI', sanskrit: 'Ajita', phonetic: 'A-thị-đa',
+    desc: 'Điểm đặc trưng nhất của ngài là có đôi lông mi rất dài rủ xuống, biểu thị cho sự trường thọ và trí tuệ sâu dày.' },
+  { n: 16, name: 'Kháng Môn La Hán', short: 'KHÁNG MÔN', sanskrit: 'Cullapatka', phonetic: 'Trú-trà-bán-thác-ca',
+    desc: 'Vị La Hán cầm một cây tích trượng có những chiếc vòng rung lên để thông báo khi đi khất thực thay vì gõ cửa nhà dân.' },
+  { n: 17, name: 'Hàng Long La Hán', short: 'HÀNG LONG', sanskrit: 'Nandimitra', phonetic: 'Khánh-hữu',
+    desc: 'Vị La Hán thứ 17 được thêm vào với hình ảnh dũng mãnh đang thuần phục một con rồng lớn.' },
+  { n: 18, name: 'Phục Hổ La Hán', short: 'PHỤC HỔ', sanskrit: 'Dharmatrata', phonetic: 'Tân-đầu-lô',
+    desc: 'Vị La Hán thứ 18, thường đi kèm hình ảnh một con hổ dữ đã được ngài thuần hóa bằng lòng từ bi.' }
+];
+
 const INFO: Record<string, InfoContent> = {
   'hell-0': {
     title: 'Luật Nhân Quả',
@@ -117,14 +165,19 @@ const INFO: Record<string, InfoContent> = {
     subtitle: 'Tháp bảy tầng và vườn tháp',
     body: 'Bảo tháp bảy tầng là nơi tôn thờ Xá Lợi. Hai bên sân là vườn tháp mộ của chư Tổ, chư Tăng đời trước. Đi nhiễu quanh tháp, chắp tay niệm Phật là một cách tu tập tịnh tâm.'
   },
-  'zen-guide': {
-    title: 'Hướng dẫn ngồi thiền',
-    subtitle: 'Thiền Đường',
-    body: 'Bấm "Ngồi thiền" để tự đi đến bồ đoàn trống gần nhất. Ngồi thẳng lưng, thả lỏng vai, mắt khép hờ. Theo dõi vòng tròn: hít vào khi vòng nở ra, thở ra khi vòng thu lại. Ở Thiền Đường, mỗi 30 giây ngồi thiền được cộng 2 công đức. Bấm lại "Ngồi thiền" để xả thiền.'
+  'arhat-0': {
+    title: 'La Hán Đường',
+    subtitle: 'Thập bát La Hán',
+    body: 'Mười tám vị A-la-hán là các đệ tử của Đức Phật, đã dứt sạch phiền não và phát nguyện ở lại thế gian hộ trì Chánh pháp. Hãy đi dọc vách bên trái từ vị thứ 1 đến vị thứ 9, rồi sang vách bên phải từ vị thứ 10 về tới vị thứ 18. Đứng gần mỗi pho tượng để đọc tích của ngài.'
   }
 };
 
 export function getInfo(id: string): InfoContent | null {
+  const a = /^arhat-(\d+)$/.exec(id);
+  if (a && Number(a[1]) > 0) {
+    const A = ARHATS[Number(a[1]) - 1];
+    if (A) return { title: `${A.n}. ${A.name}`, subtitle: `${A.sanskrit} · ${A.phonetic}`, body: A.desc };
+  }
   const m = /^hell-(\d+)$/.exec(id);
   if (m) {
     const n = Number(m[1]);
