@@ -153,10 +153,10 @@ export const FIXED_THEMES: Record<string, TempleTheme> = {
     particles: { kind: 'ember', color: 0xff7a2a, count: 300, size: 0.55, fallSpeed: 0.9 },
     leafPile: [0x3a2a24]
   },
-  'dien-thien': {
-    id: 'dien-thien',
-    name: 'Thiền đường',
-    icon: '🧘',
+  'la-han': {
+    id: 'la-han',
+    name: 'La Hán đường',
+    icon: '🏯',
     description: 'Chánh điện ấm áp, nắng sớm xuyên qua song cửa',
     fixed: true,
     glow: 1.0,
