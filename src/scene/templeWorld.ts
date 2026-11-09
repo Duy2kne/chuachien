@@ -14,6 +14,7 @@ import {
 import type { IncenseItem, FlowerItem, LanternItem, LeafPile, WishItem } from '../types.js';
 import { DEFAULT_THEME, type TempleTheme } from './themes.js';
 import { DINING, traySlot, type TrayItem } from '../shared/dining.js';
+import { getMapSpec, type MapId, type MapSpec } from '../shared/maps.js';
 
 // Số ngẫu nhiên có hạt giống: mọi người chơi thấy cây giống hệt nhau
 function seeded(seed: number) {
@@ -316,7 +317,7 @@ export class TempleWorld {
   public nightLights: THREE.PointLight[] = [];
   public lanternsGlow: THREE.PointLight[] = [];
   // Vật liệu phát sáng (đèn đá, đèn lồng) sáng rực hơn về đêm
-  private glowMaterials: THREE.MeshStandardMaterial[] = [];
+  public glowMaterials: THREE.MeshStandardMaterial[] = [];
   public isNight = false;
 
   private skyMesh: THREE.Mesh | null = null;
@@ -330,15 +331,15 @@ export class TempleWorld {
   private skyLanternData: { a: number; r: number; y: number; speed: number; sway: number; phase: number; s: number }[] = [];
   private skyLanternDummy = new THREE.Object3D();
   // Chi tiết trang trí chỉ hiện ban đêm (vũng sáng dưới đèn, quầng đèn lồng)
-  private nightOnly: THREE.Object3D[] = [];
+  public nightOnly: THREE.Object3D[] = [];
   // Mặt nước hồ: ban đêm bớt bóng để ánh trăng phản chiếu không loá
   private waterMats: THREE.MeshStandardMaterial[] = [];
-  private waterMat(m: THREE.MeshStandardMaterial) {
+  public waterMat(m: THREE.MeshStandardMaterial) {
     this.waterMats.push(m);
     m.roughness = this.isNight ? 0.38 : 0.1;
     return m;
   }
-  private buddhaHalo: THREE.Mesh | null = null;
+  public buddhaHalo: THREE.Mesh | null = null;
 
   // Khói hương tròn mờ
   private smokeSprites: THREE.Sprite[] = [];
@@ -351,7 +352,7 @@ export class TempleWorld {
   private petalData: { x: number; y: number; z: number; rx: number; ry: number; speed: number; rotSpeed: number }[] = [];
 
   // Vật liệu đổi màu theo cảnh của phòng (mùa xuân, thu, đông...)
-  private themeMats: Record<'mountains' | 'grass' | 'grassBlade' | 'blossom' | 'foliage' | 'treeFlower' | 'palm', THREE.MeshStandardMaterial[]> = {
+  public themeMats: Record<'mountains' | 'grass' | 'grassBlade' | 'blossom' | 'foliage' | 'treeFlower' | 'palm', THREE.MeshStandardMaterial[]> = {
     mountains: [], grass: [], grassBlade: [], blossom: [], foliage: [], treeFlower: [], palm: []
   };
   public theme: TempleTheme = DEFAULT_THEME;
@@ -383,17 +384,42 @@ export class TempleWorld {
   private bellRingingTimer = 0;
   private drumBeatingTimer = 0;
 
-  constructor(scene: THREE.Scene) {
+  // ===================== BẢN ĐỒ =====================
+  // Mọi vật thể của cảnh nằm trong `root` để đổi phòng (đổi bản đồ) thì gỡ ra một lượt
+  public readonly mapId: MapId;
+  public readonly root = new THREE.Group();
+  public readonly spec: MapSpec;
+  // Độ cao mặt nền của các bản đồ khác chùa chính (mặc định phẳng)
+  public groundFn: ((x: number, z: number) => number) | null = null;
+  // Hoạt ảnh riêng của từng bản đồ (gọi mỗi khung hình)
+  public animators: ((delta: number, elapsed: number) => void)[] = [];
+  // Điểm xem thông tin: đứng gần thì hiện bảng nội dung (các tầng địa ngục, hướng dẫn ngồi thiền...)
+  public infoPoints: { id: string; x: number; z: number; r: number }[] = [];
+  // Vùng hạt bay (cánh hoa, tuyết, tàn lửa...): [minX, maxX, minZ, maxZ, độ cao tối đa]
+  public particleArea: [number, number, number, number, number] = [-35, 35, -30, 40, 15];
+  // Độ cao miệng lư hương (khói bốc lên từ đây)
+  public smokeY = 1.75;
+
+  constructor(scene: THREE.Scene, mapId: MapId = 'main', builder?: (w: TempleWorld) => void) {
     this.scene = scene;
-    this.buildWorld();
+    this.mapId = builder ? mapId : 'main';
+    this.spec = getMapSpec(this.mapId);
+    this.buildWorld(builder);
     this.applyTheme(DEFAULT_THEME);
   }
 
-  private buildWorld() {
-    this.scene.add(this.lanternLayer);
-    this.scene.add(this.leafLayer);
+  private buildWorld(builder?: (w: TempleWorld) => void) {
+    this.scene.add(this.root);
+    this.root.add(this.lanternLayer);
+    this.root.add(this.leafLayer);
     this.setupLighting();
     this.buildSkyDome();
+    if (this.mapId !== 'main' && builder) {
+      builder(this);
+      this.setupSmokeAndPetals();
+      this.enableShadows();
+      return;
+    }
     this.buildMountainRanges();
     this.buildGroundAndFlora();
     this.buildMainHall();
@@ -410,10 +436,33 @@ export class TempleWorld {
     this.buildDiningHall();
   }
 
+  // Gỡ toàn bộ cảnh khỏi scene và giải phóng bộ nhớ GPU (khi chuyển sang phòng có bản đồ khác)
+  public dispose() {
+    this.scene.remove(this.root);
+    const geos = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    const texs = new Set<THREE.Texture>();
+    this.root.traverse(obj => {
+      const m = obj as THREE.Mesh;
+      if (m.geometry) geos.add(m.geometry);
+      const mm = (m as any).material as THREE.Material | THREE.Material[] | undefined;
+      if (mm) (Array.isArray(mm) ? mm : [mm]).forEach(x => mats.add(x));
+      const light = obj as THREE.DirectionalLight;
+      if (light.isLight && light.shadow?.map) light.shadow.map.dispose();
+    });
+    for (const mat of mats) {
+      for (const v of Object.values(mat)) if (v && (v as THREE.Texture).isTexture) texs.add(v as THREE.Texture);
+      mat.dispose();
+    }
+    geos.forEach(g => g.dispose());
+    texs.forEach(t => t.dispose());
+    this.animators = [];
+  }
+
   private enableShadows() {
     const worldPos = new THREE.Vector3();
-    this.scene.updateMatrixWorld(true);
-    this.scene.traverse(obj => {
+    this.root.updateMatrixWorld(true);
+    this.root.traverse(obj => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh || (obj as THREE.InstancedMesh).isInstancedMesh) return;
       const mat = mesh.material as THREE.Material;
@@ -425,7 +474,8 @@ export class TempleWorld {
       }
       mesh.getWorldPosition(worldPos);
       if (Math.hypot(worldPos.x, worldPos.z - 8) > 70) return;
-      mesh.castShadow = true;
+      // Vỏ nhà (tường, trần thiền đường): nhận bóng nhưng không chặn nắng, vẫn chặn camera
+      mesh.castShadow = !mesh.userData.noCastShadow;
       mesh.receiveShadow = true;
       mesh.geometry.computeBoundingSphere();
       const r = (mesh.geometry.boundingSphere?.radius || 0) * Math.max(mesh.scale.x, mesh.scale.y, mesh.scale.z);
@@ -439,7 +489,7 @@ export class TempleWorld {
     this.hemiLight = new THREE.HemisphereLight(0xfff1d6, 0x6b5a3a, 0.55);
     // Ánh sáng môi trường (RoomEnvironment) chỉ để kim loại phản chiếu, không làm cảnh bị chói
     this.scene.environmentIntensity = 0.35;
-    this.scene.add(this.hemiLight);
+    this.root.add(this.hemiLight);
 
     // DirectionalLight: nắng chiều vàng ấm #ffd9a0, cường độ 2.5, từ góc thấp phía tây để tạo bóng dài
     this.sunLight = new THREE.DirectionalLight(0xffd9a0, 2.2);
@@ -458,7 +508,7 @@ export class TempleWorld {
     this.sunLight.shadow.camera.bottom = -d;
     this.sunLight.shadow.bias = -0.0003;
     this.sunLight.shadow.normalBias = 0.02; // Chống sọc bóng trên bề mặt cong
-    this.scene.add(this.sunLight);
+    this.root.add(this.sunLight);
 
     // Fog: màu trùng màu chân trời (#ffe3b3 ban ngày), near 60, far 250
     this.scene.fog = new THREE.Fog(0xdfe6df, 90, 520);
@@ -507,7 +557,7 @@ export class TempleWorld {
     });
 
     this.skyMesh = new THREE.Mesh(skyGeo, this.skyMaterial);
-    this.scene.add(this.skyMesh);
+    this.root.add(this.skyMesh);
 
     // Mây low-poly trắng trôi chậm trên bầu trời
     this.cloudsGroup = new THREE.Group();
@@ -537,7 +587,7 @@ export class TempleWorld {
       cloud.position.set(c.x, c.y, c.z);
       this.cloudsGroup.add(cloud);
     }
-    this.scene.add(this.cloudsGroup);
+    this.root.add(this.cloudsGroup);
 
     // Mặt trời phát sáng ấm buổi chiều
     const sunCanvas = document.createElement('canvas');
@@ -556,7 +606,7 @@ export class TempleWorld {
     const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: sunTex, depthWrite: false }));
     sunSprite.position.set(-150, 95, 120);
     sunSprite.scale.set(30, 30, 1);
-    this.scene.add(sunSprite);
+    this.root.add(sunSprite);
 
     // Mặt trăng rằm và ngàn sao ban đêm
     this.moonGroup = new THREE.Group();
@@ -573,7 +623,7 @@ export class TempleWorld {
 
     this.moonGroup.position.set(-110, 140, -220);
     this.moonGroup.visible = false;
-    this.scene.add(this.moonGroup);
+    this.root.add(this.moonGroup);
 
     // 800 Ngôi sao trên bầu trời đêm
     const starCount = 800;
@@ -593,7 +643,7 @@ export class TempleWorld {
       new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: true, transparent: true, opacity: 0.9, fog: false })
     );
     this.starsPoints.visible = false;
-    this.scene.add(this.starsPoints);
+    this.root.add(this.starsPoints);
 
     this.buildSkyLanterns();
   }
@@ -621,7 +671,7 @@ export class TempleWorld {
       this.skyLanternMesh.setColorAt(i, c.setHex(colors[i % colors.length]));
     }
     this.skyLanternMesh.visible = false;
-    this.scene.add(this.skyLanternMesh);
+    this.root.add(this.skyLanternMesh);
 
     // quầng sáng cam quanh mỗi đèn
     const glowGeo = new THREE.BufferGeometry();
@@ -650,7 +700,7 @@ export class TempleWorld {
     );
     this.skyLanternGlow.frustumCulled = false;
     this.skyLanternGlow.visible = false;
-    this.scene.add(this.skyLanternGlow);
+    this.root.add(this.skyLanternGlow);
     this.updateSkyLanterns(0, 0);
   }
 
@@ -681,7 +731,7 @@ export class TempleWorld {
   }
 
   // ===================== 3. NÚI NON LOW-POLY HÒA VÀO SƯƠNG =====================
-  private buildMountainRanges() {
+  public buildMountainRanges() {
     // 3 lớp đồi núi tròn nhấp nhô ở xa, xanh nhạt dần theo khoảng cách để hòa vào sương
     const layers = [
       { dist: 150, count: 10, radius: 34, height: 26, color: 0x6f8f72 },
@@ -715,7 +765,7 @@ export class TempleWorld {
         mesh.scale.set(r * 1.4, lyr.height * (0.7 + Math.random() * 0.5), r);
         mesh.rotation.y = angle;
         mesh.position.set(x, -lyr.height * 0.12, z);
-        this.scene.add(mesh);
+        this.root.add(mesh);
       }
     }
   }
@@ -733,7 +783,7 @@ export class TempleWorld {
     grassGround.rotation.x = -Math.PI / 2;
     grassGround.position.y = -0.04;
     grassGround.receiveShadow = true;
-    this.scene.add(grassGround);
+    this.root.add(grassGround);
 
     // 2. Sân chùa gạch đá vuông be ấm (#cfc6b4 xen #bdb3a0)
     const courtyardGeo = new THREE.PlaneGeometry(64, 72);
@@ -746,7 +796,7 @@ export class TempleWorld {
     courtyard.rotation.x = -Math.PI / 2;
     courtyard.position.set(0, 0.01, 10);
     courtyard.receiveShadow = true;
-    this.scene.add(courtyard);
+    this.root.add(courtyard);
 
     // Viền đá bó vỉa giữa sân chùa và bãi cỏ
     const curbMat = new THREE.MeshStandardMaterial({ color: 0x9e988a, roughness: 0.85 });
@@ -759,7 +809,7 @@ export class TempleWorld {
     for (const cb of curbSegments) {
       const curb = new THREE.Mesh(new THREE.BoxGeometry(cb.w, 0.12, cb.d), curbMat);
       curb.position.set(cb.x, 0.06, cb.z);
-      this.scene.add(curb);
+      this.root.add(curb);
     }
 
     // 3. Lối đi chính từ cổng tam quan vào chính điện: phiến đá lớn sáng màu, rộng 6 đơn vị
@@ -776,7 +826,7 @@ export class TempleWorld {
     mainPath.rotation.x = -Math.PI / 2;
     mainPath.position.set(0, 0.03, 17.5);
     mainPath.receiveShadow = true;
-    this.scene.add(mainPath);
+    this.root.add(mainPath);
 
     // 4. InstancedMesh: 2000 Bụi cỏ và hoa nhỏ ngoài sân
     const grassBladeGeo = new THREE.ConeGeometry(0.08, 0.45, 4);
@@ -816,7 +866,7 @@ export class TempleWorld {
     }
     this.grassMesh.instanceMatrix.needsUpdate = true;
     this.grassMesh.computeBoundingSphere();
-    this.scene.add(this.grassMesh);
+    this.root.add(this.grassMesh);
 
     // Hàng đèn đá chùa và bệ bonsai men lam đối xứng dọc hai bên lối đi chính (như trong ảnh mẫu)
     // Cặp 1 (tiền cảnh z=24): Đèn đá búp sen hai bên
@@ -857,7 +907,7 @@ export class TempleWorld {
   }
 
   // Bồ đoàn tròn màu vàng nghệ may gờ nổi và rốn bồ đoàn (đúng chuẩn ảnh mẫu)
-  private createRoundCushion(x: number, z: number) {
+  public createRoundCushion(x: number, z: number) {
     const group = new THREE.Group();
     const geo = new THREE.CylinderGeometry(0.46, 0.5, 0.16, 28);
     const mat = new THREE.MeshStandardMaterial({
@@ -887,12 +937,12 @@ export class TempleWorld {
     group.add(rim);
 
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
     this.cushionSpots.push({ x, z });
   }
 
   // Đèn đá chùa đích thực: đế cánh sen nở, thân trụ đá, lồng đèn tròn sáng vàng, mái chóp nón búp sen
-  private createAuthenticStoneLantern(x: number, z: number) {
+  public createAuthenticStoneLantern(x: number, z: number) {
     const group = new THREE.Group();
     const stoneMat = new THREE.MeshStandardMaterial({
       color: 0x8c867a, // Xám đá ấm tự nhiên
@@ -952,7 +1002,7 @@ export class TempleWorld {
     this.glowMaterials.push(lampLightCore.material as THREE.MeshStandardMaterial);
 
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
 
     this.collisionBoxes.push({
       minX: x - 0.45,
@@ -965,7 +1015,7 @@ export class TempleWorld {
 
   // Tán lá dạng cụm nhiều khối nhỏ lệch tâm, xoay ngẫu nhiên (thay cho 1 khối cầu/đa diện đơn to)
   // để trông xù tự nhiên như lá cây thật, đỡ giống "viên bi láng" phẳng lì.
-  private createFoliageClump(mats: THREE.Material[], radius: number, count = 5): THREE.Group {
+  public createFoliageClump(mats: THREE.Material[], radius: number, count = 5): THREE.Group {
     const clump = new THREE.Group();
     for (let i = 0; i < count; i++) {
       const isCore = i === 0;
@@ -983,7 +1033,7 @@ export class TempleWorld {
   }
 
   // Bệ đá cao với chậu men lam và cây cảnh hoa mai vàng rực rỡ / tán xanh (như trong ảnh mẫu)
-  private createPedestalBonsai(x: number, z: number, type: 'yellow_blossom' | 'green_foliage') {
+  public createPedestalBonsai(x: number, z: number, type: 'yellow_blossom' | 'green_foliage') {
     const group = new THREE.Group();
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8c867a, roughness: 0.9 });
     const potTex = createBonsaiPotTexture();
@@ -1086,7 +1136,7 @@ export class TempleWorld {
     }
 
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
 
     this.collisionBoxes.push({
       minX: x - 0.45,
@@ -1098,7 +1148,7 @@ export class TempleWorld {
   }
 
   // ===================== 5. LƯ HƯƠNG ĐỒNG LỚN (ĐỒNG #6b4a2b, KIM LOẠI 0.8) =====================
-  private buildGrandBronzeUrn(x: number, z: number) {
+  public buildGrandBronzeUrn(x: number, z: number) {
     this.incenseUrnGroup = new THREE.Group();
     const bronzeMat = new THREE.MeshStandardMaterial({
       color: 0x6b4a2b,
@@ -1166,7 +1216,7 @@ export class TempleWorld {
     this.incenseUrnGroup.add(emberLight);
 
     this.incenseUrnGroup.position.set(x, 0, z);
-    this.scene.add(this.incenseUrnGroup);
+    this.root.add(this.incenseUrnGroup);
 
     this.collisionCircles.push({ x, z, r: 1.35 });
   }
@@ -1219,7 +1269,7 @@ export class TempleWorld {
 
 
     gate.position.set(0, 0, 36);
-    this.scene.add(gate);
+    this.root.add(gate);
 
     this.collisionBoxes.push(
       { minX: -6.2, maxX: -5.0, minZ: 35.4, maxZ: 36.6, type: 'impassable' },
@@ -1351,7 +1401,7 @@ export class TempleWorld {
     this.buildAuthenticBuddhaAndAltar(hall);
     this.buildAttendantBodhisattvas(hall);
 
-    this.scene.add(hall);
+    this.root.add(hall);
 
     this.collisionBoxes.push(
       { minX: -3.8, maxX: 3.8, minZ: -16.8, maxZ: -12.5, type: 'impassable' },
@@ -1411,7 +1461,7 @@ export class TempleWorld {
   }
 
   // Đèn lồng đỏ treo hiên
-  private createHangingLantern(x: number, y: number, z: number, parent: THREE.Group) {
+  public createHangingLantern(x: number, y: number, z: number, parent: THREE.Group) {
     const group = new THREE.Group();
     const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.5), new THREE.MeshBasicMaterial({ color: 0x1c1917 }));
     cord.position.y = -0.25;
@@ -1450,7 +1500,7 @@ export class TempleWorld {
   // Đôi Hạc cưỡi quy (Hạc đứng trên lưng rùa) bằng đồng vàng uy nghi chầu hai bên cửa chính điện (như trong ảnh mẫu)
   // ===================== HÌNH KHỐI DÙNG CHUNG CHO TƯỢNG =====================
   // Tô màu (có thể chuyển sắc theo trục Y) rồi đặt hình vào vị trí; trả về hình không index để gộp
-  private static paint(geo: THREE.BufferGeometry, c0: number, c1?: number, yMin = 0, yMax = 1, matrix?: THREE.Matrix4) {
+  public static paint(geo: THREE.BufferGeometry, c0: number, c1?: number, yMin = 0, yMax = 1, matrix?: THREE.Matrix4) {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (g !== geo) geo.dispose();
     const pos = g.attributes.position;
@@ -1470,14 +1520,14 @@ export class TempleWorld {
     return g;
   }
 
-  private static mergeAll(list: THREE.BufferGeometry[]) {
+  public static mergeAll(list: THREE.BufferGeometry[]) {
     const m = mergeGeometries(list, false);
     list.forEach((g) => g.dispose());
     return m;
   }
 
   // Cánh sen / lông vũ: hình lá nhọn đùn dày, dài theo +Y, mặt ngoài hướng +Z, đầu cong ra ngoài
-  private static leafBlade(len: number, wid: number, thick: number, bend = 0.25) {
+  public static leafBlade(len: number, wid: number, thick: number, bend = 0.25) {
     const sh = new THREE.Shape();
     sh.moveTo(0, 0);
     sh.quadraticCurveTo(wid, len * 0.42, 0, len);
@@ -1501,7 +1551,7 @@ export class TempleWorld {
   }
 
   // Ma trận đặt 1 cánh: nghiêng ra ngoài (tilt) rồi xoay quanh trục đứng tới góc a, cách tâm r
-  private static ringMatrix(a: number, r: number, y: number, tilt: number, scale = 1) {
+  public static ringMatrix(a: number, r: number, y: number, tilt: number, scale = 1) {
     const e = new THREE.Euler(tilt, a, 0, 'YXZ');
     return new THREE.Matrix4().compose(
       new THREE.Vector3(Math.sin(a) * r, y, Math.cos(a) * r),
@@ -1511,7 +1561,7 @@ export class TempleWorld {
   }
 
   // Đài sen nhiều tầng cánh nhọn, chuyển sắc từ gốc tới đầu cánh
-  private static lotusThrone(tiers: { n: number; r: number; y: number; len: number; wid: number; tilt: number; c0: number; c1: number }[]) {
+  public static lotusThrone(tiers: { n: number; r: number; y: number; len: number; wid: number; tilt: number; c0: number; c1: number }[]) {
     const parts: THREE.BufferGeometry[] = [];
     tiers.forEach((t, ti) => {
       for (let i = 0; i < t.n; i++) {
@@ -1524,7 +1574,7 @@ export class TempleWorld {
   }
 
   // Ống thon dần theo đường cong (cổ hạc, dải lụa…)
-  private static taperTube(curve: THREE.Curve<THREE.Vector3>, seg: number, r0: number, r1: number, radial = 10) {
+  public static taperTube(curve: THREE.Curve<THREE.Vector3>, seg: number, r0: number, r1: number, radial = 10) {
     const g = new THREE.TubeGeometry(curve, seg, 1, radial, false);
     const pos = g.attributes.position;
     const P = new THREE.Vector3();
@@ -1543,7 +1593,7 @@ export class TempleWorld {
   }
 
   // Khối tròn nối 2 điểm (tay, chân, cành)
-  private static capsuleBetween(a: THREE.Vector3, b: THREE.Vector3, r: number) {
+  public static capsuleBetween(a: THREE.Vector3, b: THREE.Vector3, r: number) {
     const dir = new THREE.Vector3().subVectors(b, a);
     const g = new THREE.CapsuleGeometry(r, Math.max(0.01, dir.length()), 4, 12);
     g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize()));
@@ -1552,7 +1602,7 @@ export class TempleWorld {
   }
 
   // Áo tiện tròn có nếp gấp dọc ở phần dưới (pleats)
-  private static pleatedLathe(profile: THREE.Vector2[], seg: number, folds: number, depth: number, foldTop: number, phiStart = 0, phiLength = Math.PI * 2) {
+  public static pleatedLathe(profile: THREE.Vector2[], seg: number, folds: number, depth: number, foldTop: number, phiStart = 0, phiLength = Math.PI * 2) {
     const g = new THREE.LatheGeometry(profile, seg, phiStart, phiLength);
     const p = g.attributes.position;
     for (let i = 0; i < p.count; i++) {
@@ -1769,9 +1819,13 @@ export class TempleWorld {
 
   // ===================== 8. TƯỢNG PHẬT THÍCH CA THIỀN ĐỊNH ĐÍCH THỰC =====================
   // Đài sen 2 tầng cánh, chân xếp bằng, tay đặt trong lòng (ấn thiền định), nhục kế, tai dài, vàng kim (#d4a537, metalness 0.85)
-  private buildAuthenticBuddhaAndAltar(parent: THREE.Group) {
+  public buildAuthenticBuddhaAndAltar(parent: THREE.Group) {
     const altar = new THREE.Group();
     altar.position.set(0, 0.9, -14.5);
+    // Tượng + đài sen gom thành một nhóm (thiền đường phóng to tượng, đặt lên bệ cao)
+    const statue = new THREE.Group();
+    altar.add(statue);
+    altar.userData.statue = statue;
 
     // Bàn thờ gỗ chạm trổ sơn then
     const tableMat = new THREE.MeshStandardMaterial({ color: 0x4a120e, roughness: 0.5, metalness: 0.2 });
@@ -1824,19 +1878,19 @@ export class TempleWorld {
     );
     throne.position.z = -0.6;
     throne.castShadow = true;
-    altar.add(throne);
+    statue.add(throne);
 
     // Đế đài sen: bệ bát giác vàng + mặt đài
     const pedestalBase = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.5, 0.55, 8), goldBuddhaMat);
     pedestalBase.position.set(0, 1.45, -0.6);
-    altar.add(pedestalBase);
+    statue.add(pedestalBase);
     const pedestalBand = new THREE.Mesh(new THREE.TorusGeometry(1.48, 0.05, 8, 48), goldBuddhaMat);
     pedestalBand.rotation.x = Math.PI / 2;
     pedestalBand.position.set(0, 1.22, -0.6);
-    altar.add(pedestalBand);
+    statue.add(pedestalBand);
     const pedestalTop = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.22, 0.16, 40), goldBuddhaMat);
     pedestalTop.position.set(0, 1.95, -0.6);
-    altar.add(pedestalTop);
+    statue.add(pedestalTop);
     // Gương sen (đài nhuỵ) viền hạt
     const seedRing = new THREE.InstancedMesh(new THREE.SphereGeometry(0.045, 8, 6), goldBuddhaMat, 40);
     const sd = new THREE.Object3D();
@@ -1846,7 +1900,7 @@ export class TempleWorld {
       sd.updateMatrix();
       seedRing.setMatrixAt(i, sd.matrix);
     }
-    altar.add(seedRing);
+    statue.add(seedRing);
 
     // TƯỢNG PHẬT NGỒI KIẾT GIÀ, THỦ ẤN THIỀN ĐỊNH
     const buddha = new THREE.Group();
@@ -2113,7 +2167,7 @@ export class TempleWorld {
       altar.add(stem);
     }
 
-    altar.add(buddha);
+    statue.add(buddha);
     this.altarGroup = altar;
     parent.add(altar);
   }
@@ -2308,7 +2362,7 @@ export class TempleWorld {
     ropeKnot.position.set(2.2, 1.55, 0);
     pavilion.add(ropeKnot);
 
-    this.scene.add(pavilion);
+    this.root.add(pavilion);
 
     // Trống bát nhã giữa lầu (trục trống nằm theo trục z)
     this.collisionBoxes.push({ minX: 16.9, maxX: 19.1, minZ: 7.2, maxZ: 8.8, type: 'impassable' });
@@ -2391,7 +2445,7 @@ export class TempleWorld {
     const quanAmGroup = this.makeQuanAmFigure();
     pond.add(quanAmGroup);
     this.pondGroup = pond;
-    this.scene.add(pond);
+    this.root.add(pond);
 
     this.collisionCircles.push({ x: -18, z: 24, r: 8.4 });
   }
@@ -2399,7 +2453,7 @@ export class TempleWorld {
   // Tượng Quan Âm bạch ngọc (dùng cho hòn non bộ giữa hồ và tượng lộ thiên)
   // Tượng Bồ Tát đứng: 'jade' = Quan Âm bạch ngọc (hồ sen, tượng lộ thiên), 'gold' = Bồ Tát thếp vàng chầu bên tượng Phật
   // holding: 'vase' = tay trái tịnh bình, tay phải cành dương liễu; 'lotus' = hai tay nâng đoá sen trước ngực
-  private makeQuanAmFigure(style: 'jade' | 'gold' = 'jade', holding: 'vase' | 'lotus' = 'vase'): THREE.Group {
+  public makeQuanAmFigure(style: 'jade' | 'gold' = 'jade', holding: 'vase' | 'lotus' = 'vase'): THREE.Group {
     const gold = style === 'gold';
     const bodyMat = gold
       ? new THREE.MeshStandardMaterial({ color: 0xd8ad45, metalness: 0.78, roughness: 0.32 })
@@ -2583,7 +2637,7 @@ export class TempleWorld {
   }
 
   // Hai vị Bồ Tát thếp vàng đứng chầu hai bên tượng Phật trên bệ sen
-  private buildAttendantBodhisattvas(parent: THREE.Group) {
+  public buildAttendantBodhisattvas(parent: THREE.Group) {
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a1c14, roughness: 0.55 });
     const goldMat = new THREE.MeshStandardMaterial({ color: 0xd4a537, metalness: 0.8, roughness: 0.3 });
     for (const side of [-1, 1]) {
@@ -2746,11 +2800,11 @@ export class TempleWorld {
     sign.add(board);
     sign.rotation.y = Math.PI / 2;
     sign.position.set(-13.8, 0, 12.4);
-    this.scene.add(sign);
+    this.root.add(sign);
     this.collisionCircles.push({ x: -13.8, z: 12.4, r: 0.5 });
 
-    this.scene.add(tree);
-    this.scene.add(this.wishLayer);
+    this.root.add(tree);
+    this.root.add(this.wishLayer);
     this.collisionCircles.push({ x: C.x, z: C.z, r: 3.1 });
   }
 
@@ -2825,6 +2879,7 @@ export class TempleWorld {
 
   // Thêm dải lụa mới (vừa có người buộc): hiện ra kèm hiệu ứng bung nhẹ
   public addWishes(list: WishItem[], animate = true) {
+    if (!this.wishBranches.length) return; // bản đồ không có cây đa
     for (const item of list) {
       if (this.wishMeshMap.has(item.id)) continue;
       const g = this.makeWishRibbon(item);
@@ -2908,7 +2963,7 @@ export class TempleWorld {
       potGroup.add(bonsaiFoliage);
 
       potGroup.position.set(pos.x, 0, pos.z);
-      this.scene.add(potGroup);
+      this.root.add(potGroup);
 
       this.collisionBoxes.push({ minX: pos.x - 0.5, maxX: pos.x + 0.5, minZ: pos.z - 0.5, maxZ: pos.z + 0.5, type: 'impassable' });
     }
@@ -2941,7 +2996,7 @@ export class TempleWorld {
       }
 
       tree.position.set(tc.x, 0, tc.z);
-      this.scene.add(tree);
+      this.root.add(tree);
 
       this.collisionBoxes.push({ minX: tc.x - 0.6, maxX: tc.x + 0.6, minZ: tc.z - 0.6, maxZ: tc.z + 0.6, type: 'impassable' });
     }
@@ -2970,7 +3025,7 @@ export class TempleWorld {
     this.addLightPool(0, -2.2, 4.2, 0.2);
   }
 
-  private makeLimb(a: THREE.Vector3, b: THREE.Vector3, r0: number, r1: number) {
+  public makeLimb(a: THREE.Vector3, b: THREE.Vector3, r0: number, r1: number) {
     const dir = new THREE.Vector3().subVectors(b, a);
     const len = dir.length();
     const g = new THREE.CylinderGeometry(r1, r0, len, 7, 1);
@@ -2982,7 +3037,7 @@ export class TempleWorld {
 
   private cherryMats: { bark: THREE.MeshStandardMaterial; bloom: THREE.MeshStandardMaterial; carpet: THREE.MeshBasicMaterial } | null = null;
 
-  private buildCherryTree(x: number, z: number, scale: number, seed: number) {
+  public buildCherryTree(x: number, z: number, scale: number, seed: number) {
     const rnd = seeded(seed);
     if (!this.cherryMats) {
       this.cherryMats = {
@@ -3043,19 +3098,19 @@ export class TempleWorld {
     group.scale.setScalar(scale);
     group.rotation.y = rnd() * Math.PI * 2;
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
 
     // thảm cánh hoa rụng dưới gốc
     const carpet = new THREE.Mesh(new THREE.CircleGeometry(2.9 * scale, 28), this.cherryMats.carpet);
     carpet.rotation.x = -Math.PI / 2;
     carpet.position.set(x, 0.045, z);
     carpet.renderOrder = 1;
-    this.scene.add(carpet);
+    this.root.add(carpet);
 
     this.collisionCircles.push({ x, z, r: 0.55 * scale });
   }
 
-  private buildCloudPine(x: number, z: number, scale: number, seed: number) {
+  public buildCloudPine(x: number, z: number, scale: number, seed: number) {
     const rnd = seeded(seed);
     const V = (a: number, b: number, c: number) => new THREE.Vector3(a, b, c);
     const parts: { geo: THREE.BufferGeometry; color: number }[] = [];
@@ -3091,7 +3146,7 @@ export class TempleWorld {
     mesh.scale.setScalar(scale);
     mesh.position.set(x, 0, z);
     mesh.rotation.y = rnd() * Math.PI * 2;
-    this.scene.add(mesh);
+    this.root.add(mesh);
     this.collisionCircles.push({ x, z, r: 0.6 * scale });
   }
 
@@ -3161,11 +3216,11 @@ export class TempleWorld {
       group.add(L);
     }
     group.position.set(0, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
   }
 
   private lightPoolMat: THREE.MeshBasicMaterial | null = null;
-  private addLightPool(x: number, z: number, r: number, opacity: number) {
+  public addLightPool(x: number, z: number, r: number, opacity: number) {
     if (!this.lightPoolMat) {
       this.lightPoolMat = new THREE.MeshBasicMaterial({
         map: warmGlowTexture(), color: 0xffb066, transparent: true, depthWrite: false,
@@ -3177,8 +3232,9 @@ export class TempleWorld {
     m.rotation.x = -Math.PI / 2;
     m.position.set(x, 0.06, z);
     m.renderOrder = 2;
-    this.scene.add(m);
+    this.root.add(m);
     this.nightOnly.push(m);
+    return m;
   }
 
   // Tường rào bao quanh chùa & Hàng cau/dừa nhiệt đới (như trong ảnh mẫu)
@@ -3199,7 +3255,7 @@ export class TempleWorld {
       group.add(tile);
 
       group.position.set(x, 0, z);
-      this.scene.add(group);
+      this.root.add(group);
 
       this.collisionBoxes.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, type: 'impassable' });
     };
@@ -3301,7 +3357,7 @@ export class TempleWorld {
     }
 
     palm.position.set(x, 0, z);
-    this.scene.add(palm);
+    this.root.add(palm);
   }
 
   // ===================== 13. KHÓI HƯƠNG SPRITE TRÒN MỜ & CÁNH HOA RƠI INSTANCED =====================
@@ -3320,7 +3376,7 @@ export class TempleWorld {
       });
       const sp = new THREE.Sprite(mat);
       sp.scale.set(0.4, 0.4, 1);
-      this.scene.add(sp);
+      this.root.add(sp);
       this.smokeSprites.push(sp);
       this.smokeLifetimes.push(Math.random()); // Lệch pha để khói liên tục
     }
@@ -3338,23 +3394,27 @@ export class TempleWorld {
     this.fallingPetals.frustumCulled = false;
 
     for (let i = 0; i < this.petalCount; i++) {
+      const [ax0, ax1, az0, az1, ayTop] = this.particleArea;
       this.petalData.push({
-        x: (Math.random() - 0.5) * 60,
-        y: 1.5 + Math.random() * 12,
-        z: (Math.random() - 0.5) * 60,
+        x: ax0 + Math.random() * (ax1 - ax0),
+        y: 0.5 + Math.random() * (ayTop - 0.5),
+        z: az0 + Math.random() * (az1 - az0),
         rx: Math.random() * Math.PI,
         ry: Math.random() * Math.PI,
         speed: 0.6 + Math.random() * 0.5,
         rotSpeed: 0.8 + Math.random() * 1.2
       });
     }
-    this.scene.add(this.fallingPetals);
+    this.root.add(this.fallingPetals);
   }
 
   // ===================== CHẾ ĐỘ NGÀY / ĐÊM =====================
   public setDayNight(night: boolean) {
+    // Cảnh trong hang / trong điện: ánh sáng cố định, đèn nến luôn sáng
+    const fixed = !!this.theme.fixed;
+    if (fixed) night = false;
     this.isNight = night;
-    for (const o of this.nightOnly) o.visible = night;
+    for (const o of this.nightOnly) o.visible = night || fixed;
     if (this.redLanternMat) this.redLanternMat.emissiveIntensity = night ? 0.5 : 0.25;
     for (const m of this.waterMats) m.roughness = night ? 0.38 : 0.1;
     if (!this.sunLight || !this.hemiLight || !this.skyMaterial) return;
@@ -3409,9 +3469,10 @@ export class TempleWorld {
       if (this.skyLanternMesh) this.skyLanternMesh.visible = false;
       if (this.skyLanternGlow) this.skyLanternGlow.visible = false;
 
-      for (const pl of this.nightLights) pl.intensity = 0.3;
-      for (const pl of this.lanternsGlow) pl.intensity = 0.15;
-      for (const m of this.glowMaterials) m.emissiveIntensity = 0.5;
+      const lights = fixed ? this.theme.lights ?? 1 : 0.3;
+      for (const pl of this.nightLights) pl.intensity = lights;
+      for (const pl of this.lanternsGlow) pl.intensity = fixed ? lights * 0.8 : 0.15;
+      for (const m of this.glowMaterials) m.emissiveIntensity = fixed ? this.theme.glow ?? 1 : 0.5;
     }
   }
 
@@ -3438,7 +3499,7 @@ export class TempleWorld {
       this.fallingPetals.count = Math.min(this.maxParticles, pt.count);
       const pm = this.fallingPetals.material as THREE.MeshStandardMaterial;
       pm.color.setHex(pt.color);
-      const glow = pt.kind === 'firefly' ? 1.4 : pt.kind === 'snow' ? 0.35 : 0;
+      const glow = pt.kind === 'firefly' ? 1.4 : pt.kind === 'ember' ? 2.2 : pt.kind === 'dust' ? 1.0 : pt.kind === 'snow' ? 0.35 : 0;
       pm.emissive.setHex(pt.color);
       pm.emissiveIntensity = glow;
       pm.opacity = pt.kind === 'snow' ? 0.95 : 0.85;
@@ -3668,21 +3729,21 @@ export class TempleWorld {
       const m = o as THREE.Mesh;
       if (m.isMesh && !(m.material as THREE.Material).transparent) m.receiveShadow = true;
     });
-    this.scene.add(hall);
+    this.root.add(hall);
     this.cameraBlockers.push(...blockers);
-    this.scene.add(this.trayLayer);
+    this.root.add(this.trayLayer);
   }
 
   // Đĩa bánh bao đang bày trên quầy: null = chưa lấy đĩa, 0-3 = số bánh bao trên đĩa
   public setCounterPlate(buns: number | null) {
     if (this.counterPlate) {
-      this.scene.remove(this.counterPlate);
+      this.root.remove(this.counterPlate);
       this.counterPlate = null;
     }
-    if (buns === null) return;
+    if (buns === null || this.mapId !== 'main') return;
     this.counterPlate = makeBunPlateMesh(buns);
     this.counterPlate.position.set(DINING.workPlate.x, DINING.counterTop, DINING.workPlate.z);
-    this.scene.add(this.counterPlate);
+    this.root.add(this.counterPlate);
   }
 
   // Ẩn mái nhà ăn khi người chơi đang ở trong để nhìn thấy bên trong
@@ -3694,6 +3755,7 @@ export class TempleWorld {
   }
 
   public isInsideDining(x: number, z: number) {
+    if (this.mapId !== 'main') return false;
     const D = DINING;
     return x > D.minX && x < D.maxX && z > D.minZ && z < D.maxZ;
   }
@@ -3778,7 +3840,7 @@ export class TempleWorld {
     // Quay mặt bia về phía lối đi chính
     group.rotation.y = Math.PI / 2;
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.root.add(group);
     this.collisionCircles.push({ x, z, r: 1.3 });
     this.updateStele([], null);
   }
@@ -3845,6 +3907,7 @@ export class TempleWorld {
   // ===================== CÔNG TRÌNH CÚNG DƯỜNG CHUNG =====================
   // animate = mọc lên từ mặt đất khi vừa xây xong
   public setBuiltProjects(ids: string[], animate = true) {
+    if (this.mapId !== 'main') return; // công trình chung chỉ xây ở chùa chính
     for (const id of ids) {
       if (this.builtProjects.has(id)) continue;
       let group: THREE.Group | null = null;
@@ -3859,14 +3922,14 @@ export class TempleWorld {
           m.receiveShadow = true;
         }
       });
-      this.scene.add(group);
+      this.root.add(group);
       group.scale.setScalar(animate ? 0.01 : 1);
       this.builtProjects.set(id, { group, grow: animate ? 0 : 1 });
     }
   }
 
   // Bảo tháp 5 tầng mái cong
-  private buildPagoda(x: number, z: number): THREE.Group {
+  public buildPagoda(x: number, z: number, tiers = 5): THREE.Group {
     const group = new THREE.Group();
     const roofMat = new THREE.MeshStandardMaterial({ map: getVietnameseCurvedRoofTexture(), side: THREE.DoubleSide, roughness: 0.55 });
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xe9dcc4, roughness: 0.85 });
@@ -3879,8 +3942,9 @@ export class TempleWorld {
     group.add(base);
 
     let y = 0.6;
-    for (let tier = 0; tier < 5; tier++) {
-      const w = 3.0 - tier * 0.42;
+    const step = 2.1 / Math.max(5, tiers);
+    for (let tier = 0; tier < tiers; tier++) {
+      const w = 3.0 - tier * step;
       const h = tier === 0 ? 1.7 : 1.15;
       const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), wallMat);
       body.position.y = y + h / 2;
@@ -4110,13 +4174,13 @@ export class TempleWorld {
     for (const item of incenseList) {
       if (this.incenseMeshMap.has(item.id)) continue;
       const mesh = this.createIncenseStickMesh(item.x, item.y, item.z);
-      this.scene.add(mesh);
+      this.root.add(mesh);
       this.incenseMeshMap.set(item.id, mesh);
     }
     for (const item of flowerList) {
       if (this.flowerMeshMap.has(item.id)) continue;
       const mesh = this.createAltarLotusMesh(item.x, item.y, item.z);
-      this.scene.add(mesh);
+      this.root.add(mesh);
       this.flowerMeshMap.set(item.id, mesh);
     }
     for (const item of lanternList) {
@@ -4132,7 +4196,7 @@ export class TempleWorld {
     const currentIncenseIds = new Set(incenseList.map(i => i.id));
     for (const [id, mesh] of this.incenseMeshMap.entries()) {
       if (!currentIncenseIds.has(id)) {
-        this.scene.remove(mesh);
+        this.root.remove(mesh);
         this.disposeOfferingMesh(mesh);
         this.incenseMeshMap.delete(id);
       }
@@ -4140,7 +4204,7 @@ export class TempleWorld {
     for (const item of incenseList) {
       if (!this.incenseMeshMap.has(item.id)) {
         const mesh = this.createIncenseStickMesh(item.x, item.y, item.z);
-        this.scene.add(mesh);
+        this.root.add(mesh);
         this.incenseMeshMap.set(item.id, mesh);
       }
     }
@@ -4148,7 +4212,7 @@ export class TempleWorld {
     const currentFlowerIds = new Set(flowerList.map(f => f.id));
     for (const [id, mesh] of this.flowerMeshMap.entries()) {
       if (!currentFlowerIds.has(id)) {
-        this.scene.remove(mesh);
+        this.root.remove(mesh);
         this.disposeOfferingMesh(mesh);
         this.flowerMeshMap.delete(id);
       }
@@ -4156,7 +4220,7 @@ export class TempleWorld {
     for (const item of flowerList) {
       if (!this.flowerMeshMap.has(item.id)) {
         const mesh = this.createAltarLotusMesh(item.x, item.y, item.z);
-        this.scene.add(mesh);
+        this.root.add(mesh);
         this.flowerMeshMap.set(item.id, mesh);
       }
     }
@@ -4204,7 +4268,7 @@ export class TempleWorld {
 
   // Gộp nhiều khối hình lại thành 1 BufferGeometry duy nhất (kèm màu từng phần) để giảm số draw call
   // khi có nhiều nhang/hoa/đèn hoa đăng cùng lúc trên bàn thờ/mặt hồ.
-  private mergeColoredParts(parts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix?: THREE.Matrix4 }[]): THREE.BufferGeometry {
+  public mergeColoredParts(parts: { geo: THREE.BufferGeometry; color: THREE.ColorRepresentation; matrix?: THREE.Matrix4 }[]): THREE.BufferGeometry {
     const tmpColor = new THREE.Color();
     const pieces: THREE.BufferGeometry[] = [];
     const mixed = parts.some(pt => pt.geo.index) && parts.some(pt => !pt.geo.index);
@@ -4336,6 +4400,7 @@ export class TempleWorld {
 
   // ===================== TICK HOẠT HỌA =====================
   public update(delta: number, elapsed: number) {
+    for (const fn of this.animators) fn(delta, elapsed);
     this.updateSkyLanterns(delta, elapsed);
     this.updateWishes(delta, elapsed);
     // 1. Mây trôi chậm rãi trên bầu trời
@@ -4357,7 +4422,7 @@ export class TempleWorld {
       const swirl = 0.08 + lt * 0.55;
       sp.position.set(
         (urn?.x ?? 0) + Math.sin(elapsed * 0.9 + i * 1.7) * swirl + lt * 0.6,
-        1.75 + lt * 4.2,
+        this.smokeY + lt * 4.2,
         (urn?.z ?? 0) + Math.cos(elapsed * 0.7 + i * 2.3) * swirl
       );
 
@@ -4373,7 +4438,26 @@ export class TempleWorld {
       const count = this.fallingPetals.count;
       for (let i = 0; i < count; i++) {
         const p = this.petalData[i];
-        if (kind === 'firefly') {
+        const [ax0, ax1, az0, az1, ayTop] = this.particleArea;
+        if (kind === 'ember') {
+          // Tàn lửa: bốc lên từ mặt đất, lượn nhẹ, tắt dần khi lên cao
+          p.y += delta * p.speed * this.particleSpeed * 1.4;
+          p.x += Math.sin(elapsed * 1.7 + i) * delta * 0.5;
+          p.z += Math.cos(elapsed * 1.3 + i * 1.7) * delta * 0.4;
+          const life = Math.max(0, 1 - p.y / ayTop);
+          this.petalDummy.scale.setScalar(this.particleSize * (0.3 + 0.7 * life) * (0.7 + 0.3 * Math.sin(elapsed * 9 + i)));
+          if (p.y > ayTop) {
+            p.y = 0.05;
+            p.x = ax0 + Math.random() * (ax1 - ax0);
+            p.z = az0 + Math.random() * (az1 - az0);
+          }
+        } else if (kind === 'dust') {
+          // Bụi vàng lơ lửng trong nắng: trôi rất chậm, lấp lánh
+          p.x += Math.sin(elapsed * 0.21 + i * 1.3) * delta * 0.12;
+          p.z += Math.cos(elapsed * 0.17 + i * 2.1) * delta * 0.12;
+          p.y += Math.sin(elapsed * 0.3 + i) * delta * 0.08;
+          this.petalDummy.scale.setScalar(this.particleSize * (0.4 + 0.6 * Math.max(0, Math.sin(elapsed * 0.9 + i * 0.7))));
+        } else if (kind === 'firefly') {
           // Đom đóm bay lượn thấp, nhấp nháy
           p.x += Math.sin(elapsed * 0.7 + i * 1.3) * delta * 0.6;
           p.z += Math.cos(elapsed * 0.6 + i * 2.1) * delta * 0.6;
@@ -4389,10 +4473,10 @@ export class TempleWorld {
           this.petalDummy.scale.setScalar(this.particleSize);
         }
 
-        if (p.y < 0.1) {
-          p.y = 11 + Math.random() * 4;
-          p.x = (Math.random() - 0.5) * 70;
-          p.z = (Math.random() - 0.5) * 70 + 5;
+        if (p.y < 0.1 && kind !== 'ember' && kind !== 'dust') {
+          p.y = ayTop * 0.75 + Math.random() * ayTop * 0.25;
+          p.x = ax0 + Math.random() * (ax1 - ax0);
+          p.z = az0 + Math.random() * (az1 - az0);
         }
 
         this.petalDummy.position.set(p.x, p.y, p.z);
@@ -4469,6 +4553,7 @@ export class TempleWorld {
   // ===================== ĐỘ CAO MẶT NỀN =====================
   // Nền chính điện cao 0.9, 5 bậc tam cấp mỗi bậc 0.18, nền lầu chuông bát giác cao 0.6 có mép vát
   public getGroundHeight(x: number, z: number): number {
+    if (this.mapId !== 'main') return this.groundFn ? this.groundFn(x, z) : 0;
     let h = 0;
     if (Math.abs(x) <= 11 && z >= -20 && z <= -4) {
       h = 0.9;
@@ -4485,6 +4570,10 @@ export class TempleWorld {
   // ===================== KIỂM TRA VA CHẠM =====================
   public checkCollision(x: number, z: number, radius = 0.35): { allowed: boolean; height: number } {
     const groundHeight = this.getGroundHeight(x, z);
+    const B = this.spec.bounds;
+    if (this.mapId !== 'main' && (x < B.minX + radius || x > B.maxX - radius || z < B.minZ + radius || z > B.maxZ - radius)) {
+      return { allowed: false, height: groundHeight };
+    }
 
     for (const c of this.collisionCircles) {
       if (Math.hypot(x - c.x, z - c.z) < c.r + radius) return { allowed: false, height: groundHeight };
