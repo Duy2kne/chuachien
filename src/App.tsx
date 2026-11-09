@@ -6,6 +6,11 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { TempleWorld } from './scene/templeWorld.js';
+import { createWorld } from './scene/maps/index.js';
+import { getInfo } from './scene/maps/infoContent.js';
+import { getMapSpec, planRoute, isMapId, type MapId } from './shared/maps.js';
+import { InfoPanel } from './components/InfoPanel.js';
+import { MeditationGuide } from './components/MeditationGuide.js';
 import { PlayerAvatar, ACTION_DURATION, type AvatarSoundEvent } from './scene/playerAvatar.js';
 import { network } from './network/networkClient.js';
 import { sound } from './audio/soundEngine.js';
@@ -36,7 +41,6 @@ const _camRay = new THREE.Raycaster();
 const TOGGLE_ACTIONS: ActionType[] = ['namaste', 'meditate', 'wooden_fish'];
 
 // Toạ độ các điểm trong chùa (khớp với templeWorld.ts)
-const HALL_FOCUS = { x: 0, z: -14.5 };   // Tượng Phật trong chính điện
 const POND_CENTER = { x: -18, z: 24 };   // Hồ sen
 const POND_EDGE_RADIUS = 9.0;           // Đứng ngay bên ngoài bờ đá
 const faceTo = (x: number, z: number, tx: number, tz: number) => Math.atan2(tx - x, tz - z);
@@ -56,35 +60,6 @@ interface AutoWalkTarget {
 
 // Leo lên chỗ cao hơn 30cm thì phải đi bậc thềm; bước xuống thì chỗ nào cũng được
 const MAX_STEP_UP = 0.3;
-const DOOR_Z = (DINING.doorZ[0] + DINING.doorZ[1]) / 2;
-const insideDining = (x: number, z: number) => x > DINING.minX && x < DINING.maxX && z > DINING.minZ && z < DINING.maxZ;
-const onTerrace = (x: number, z: number) => Math.abs(x) <= 11 && z >= -20 && z <= -4;
-
-// Lộ trình tự đi: ra/vào nhà ăn qua cửa, lên nền chính điện qua bậc thềm
-function planRoute(fromX: number, fromZ: number, toX: number, toZ: number) {
-  const via: { x: number; z: number }[] = [];
-  let x = fromX;
-  let z = fromZ;
-  if (insideDining(x, z) && !insideDining(toX, toZ)) {
-    via.push({ x: DINING.minX + 1.2, z: DOOR_Z }, { x: DINING.minX - 1.2, z: DOOR_Z });
-    x = DINING.minX - 1.2;
-    z = DOOR_Z;
-  }
-  // Đang trong chính điện mà đi ra ngoài: ra hiên trước rồi mới đi tiếp (tránh vách hông)
-  if (onTerrace(x, z) && !onTerrace(toX, toZ) && Math.abs(x) < 9.5 && z < -5) {
-    via.push({ x: Math.max(-8, Math.min(8, x)), z: -3.2 });
-    x = Math.max(-8, Math.min(8, x));
-    z = -3.2;
-  }
-  if (onTerrace(toX, toZ) && !onTerrace(x, z)) {
-    const sx = Math.max(-2.5, Math.min(2.5, toX));
-    via.push({ x: sx, z: -1.2 }, { x: sx, z: -4.6 });
-  }
-  if (insideDining(toX, toZ) && !insideDining(x, z)) {
-    via.push({ x: DINING.minX - 1.2, z: DOOR_Z }, { x: DINING.minX + 1.2, z: DOOR_Z });
-  }
-  return via;
-}
 
 // Nút tròn viền vàng trên HUD (giống nút game mobile)
 const HUD_BTN =
@@ -99,7 +74,18 @@ export default function App() {
 
   // Trạng thái giao diện
   const [hasEntered, setHasEntered] = useState(false);
-  const [currentRoom, setCurrentRoom] = useState<{ id: string; name: string; count: number; max: number; theme?: string }>({ id: 'tu-bi', name: 'Từ Bi', count: 1, max: 50 });
+  const [currentRoom, setCurrentRoom] = useState<{ id: string; name: string; count: number; max: number; theme?: string; map?: string }>({ id: 'tu-bi', name: 'Từ Bi', count: 1, max: 50 });
+  // Bản đồ của phòng hiện tại (chùa chính, chùa tháp, địa ngục, thiền đường)
+  const mapRef = useRef<MapId>('main');
+  const [mapId, setMapId] = useState<MapId>('main');
+  // Bảng thông tin của bia / biển tầng đang đứng gần (bấm X để ẩn)
+  const [infoId, setInfoId] = useState<string | null>(null);
+  const infoIdRef = useRef<string | null>(null);
+  const [infoClosed, setInfoClosed] = useState<string | null>(null);
+  useEffect(() => { if (!infoId) setInfoClosed(null); }, [infoId]);
+  // Nhớ công trình đã xây + bảng xếp hạng để dựng lại khi quay về chùa chính
+  const builtRef = useRef<string[]>([]);
+  const steleRef = useRef<LeaderboardData | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardData>({ all: [], weekly: [], winners: [], week: '' });
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   // Đổi công đức
@@ -203,7 +189,7 @@ export default function App() {
       .then(data => {
         if (!data?.communal) return;
         setCommunal(data.communal);
-        worldRef.current?.setBuiltProjects(data.communal.built, false);
+        setBuilt(data.communal.built, false);
       })
       .catch(() => {});
     fetch('/api/leaderboard')
@@ -298,7 +284,7 @@ export default function App() {
         }
         return state;
       });
-      worldRef.current?.setBuiltProjects(state.built, true);
+      setBuilt(state.built, true);
     };
     network.onLeafAdded = (leaf) => worldRef.current?.addLeafPile(leaf, true);
     network.onTrays = (trays) => {
@@ -425,7 +411,13 @@ export default function App() {
   };
 
   // Khắc tên người đứng đầu các tuần lên bia công đức trong sân chùa
+  const setBuilt = (ids: string[], animate: boolean) => {
+    builtRef.current = ids;
+    worldRef.current?.setBuiltProjects(ids, animate);
+  };
+
   const updateSteleFrom = (data: LeaderboardData) => {
+    steleRef.current = data;
     const leader = data.weekly[0] ? { name: data.weekly[0].name, merit: data.weekly[0].merit } : null;
     worldRef.current?.updateStele(data.winners, leader);
   };
@@ -522,7 +514,7 @@ export default function App() {
     destinationMarkerRef.current = destMarker;
 
     // 4. Dựng Thế giới Chùa 3D hoàn chỉnh
-    const world = new TempleWorld(scene);
+    const world = createWorld(scene, mapRef.current);
     worldRef.current = world;
     world.setDayNight(isNight);
     // Chỉ khi chạy dev: cho script kiểm tra giao diện điều khiển camera
@@ -552,9 +544,11 @@ export default function App() {
     const tick = () => {
       const delta = Math.min(clock.getDelta(), 0.1);
       const elapsed = clock.getElapsedTime();
+      // Thế giới có thể được dựng lại khi đổi sang phòng có bản đồ khác
+      const w = worldRef.current!;
 
       // Cập nhật hoạt ảnh môi trường (khói hương, mây trôi, cánh hoa rơi)
-      world.update(delta, elapsed);
+      w.update(delta, elapsed);
 
       // Cập nhật vòng đánh dấu điểm đến (nếu đang đi tới)
       if (destinationMarkerRef.current && destinationMarkerRef.current.material) {
@@ -572,8 +566,8 @@ export default function App() {
         selfAvatarRef.current.update(delta, elapsed);
 
         const sp = selfAvatarRef.current.group.position;
-        world.updateInterior(sp.x, sp.z);
-        const inside = world.isInsideDining(sp.x, sp.z);
+        w.updateInterior(sp.x, sp.z);
+        const inside = w.isInsideDining(sp.x, sp.z);
         const k = DINING.kitchenSpot;
         const atCounter = Math.hypot(sp.x - k.x, sp.z - k.z) < KITCHEN_REACH - 0.2;
         const serveSlot = kitchenRef.current.carrying ? findServeSlot(sp.x, sp.z) : null;
@@ -582,19 +576,34 @@ export default function App() {
           kitchenCtxKey.current = key;
           setKitchenCtx({ inside, atCounter, serveSlot });
         }
-        const pile = world.getNearestLeafPile(sp.x, sp.z);
+        const pile = w.getNearestLeafPile(sp.x, sp.z);
         const near = !!pile && Math.hypot(pile.x - sp.x, pile.z - sp.z) < 3 && selfAvatarRef.current.currentAnim !== 'sweep';
         if (near !== nearLeafRef.current) {
           nearLeafRef.current = near;
           setNearLeaf(near);
         }
+        // Đứng gần bia / biển tầng thì hiện bảng thông tin
+        let info: string | null = null;
+        let best = Infinity;
+        for (const ip of w.infoPoints) {
+          const d = Math.hypot(ip.x - sp.x, ip.z - sp.z);
+          if (d < ip.r && d < best) {
+            best = d;
+            info = ip.id;
+          }
+        }
+        if (info !== infoIdRef.current) {
+          infoIdRef.current = info;
+          setInfoId(info);
+        }
       } else {
         // Camera quay chậm ngắm cảnh chùa ban đầu
+        const o = w.spec.orbit;
         cameraAngle.current.theta += delta * 0.1;
-        const camX = Math.sin(cameraAngle.current.theta) * 32;
-        const camZ = Math.cos(cameraAngle.current.theta) * 32 + 10;
-        camera.position.set(camX, 12, camZ);
-        camera.lookAt(0, 3, 10);
+        const camX = o.x + Math.sin(cameraAngle.current.theta) * o.r;
+        const camZ = o.z + Math.cos(cameraAngle.current.theta) * o.r;
+        camera.position.set(camX, o.h, camZ);
+        camera.lookAt(o.x, o.y, o.z);
       }
 
       for (const other of otherAvatarsRef.current.values()) {
@@ -602,8 +611,9 @@ export default function App() {
       }
 
       // ban đêm toả sáng mạnh, ban ngày chỉ nhẹ để không chói
-      bloom.strength = world.isNight ? 0.35 : 0.12;
-      bloom.threshold = world.isNight ? 0.88 : 0.95;
+      const bl = w.theme.bloom;
+      bloom.strength = bl ? bl[0] : w.isNight ? 0.35 : 0.12;
+      bloom.threshold = bl ? bl[1] : w.isNight ? 0.88 : 0.95;
       composer.render(delta);
       frameId = requestAnimationFrame(tick);
     };
@@ -639,7 +649,7 @@ export default function App() {
   // Bắt đầu tự đi tới một vị trí (bấm hành động hoặc chạm mặt đất)
   const startAutoWalk = (x: number, z: number, ry: number, anim: ActionType, text?: string) => {
     const from = selfAvatarRef.current?.group.position;
-    const via = from ? planRoute(from.x, from.z, x, z) : [];
+    const via = from ? planRoute(mapRef.current, from.x, from.z, x, z) : [];
     autoWalkTarget.current = { x, z, ry, anim, text, walkTime: 0, bestDist: Infinity, stuckTime: 0, turnSign: 0, via };
     setIsNavigating(true);
     if (destinationMarkerRef.current) {
@@ -1053,7 +1063,8 @@ export default function App() {
     const groundHits = raycaster.intersectObjects(sceneRef.current.children, true);
     for (const hit of groundHits) {
       // Chỉ nhận các điểm tiếp xúc gần mặt phẳng đất (y: -0.2 đến 1.5) và trong khuôn viên
-      if (hit.point.y >= -0.2 && hit.point.y <= 1.2 && Math.abs(hit.point.x) < 36 && hit.point.z > -25 && hit.point.z < 45) {
+      const B = worldRef.current?.mapId === 'main' ? { minX: -36, maxX: 36, minZ: -25, maxZ: 45 } : worldRef.current?.spec.bounds;
+      if (B && hit.point.y >= -0.2 && hit.point.y <= 1.2 && hit.point.x > B.minX && hit.point.x < B.maxX && hit.point.z > B.minZ && hit.point.z < B.maxZ) {
         // Kiểm tra điểm chạm không nằm trong vùng cản
         const col = worldRef.current?.checkCollision(hit.point.x, hit.point.z);
         const self = selfAvatarRef.current;
@@ -1074,12 +1085,31 @@ export default function App() {
     cameraAngle.current.dist = Math.max(3.0, Math.min(13.0, cameraAngle.current.dist + e.deltaY * 0.005));
   };
 
-  // Đổi cảnh (mùa, thời tiết) theo phòng; phòng "Đêm trăng" luôn là ban đêm
+  // Sang phòng có bản đồ khác: gỡ cảnh cũ, dựng cảnh mới
+  const loadMap = (id?: string) => {
+    const next: MapId = isMapId(id) ? id : 'main';
+    mapRef.current = next;
+    setMapId(next);
+    const scene = sceneRef.current;
+    if (!scene || worldRef.current?.mapId === next) return;
+    worldRef.current?.dispose();
+    const w = createWorld(scene, next);
+    worldRef.current = w;
+    w.setBuiltProjects(builtRef.current, false);
+    if (steleRef.current) updateSteleFrom(steleRef.current);
+    if (import.meta.env.DEV) (window as any).__chua = { ...(window as any).__chua, world: w };
+    infoIdRef.current = null;
+    setInfoId(null);
+  };
+
+  // Đổi cảnh (mùa, thời tiết) theo phòng; phòng "Đêm trăng" luôn là ban đêm; địa ngục, thiền đường ánh sáng cố định
   const applyRoomTheme = (themeId?: string) => {
     const theme = getTheme(themeId);
-    worldRef.current?.applyTheme(theme);
     const hour = new Date().getHours();
-    setIsNight(theme.forceNight ? true : hour < 6 || hour >= 18);
+    const night = theme.fixed ? false : theme.forceNight ? true : hour < 6 || hour >= 18;
+    worldRef.current?.applyTheme(theme);
+    worldRef.current?.setDayNight(night);
+    setIsNight(night);
   };
 
   // Vào chùa
@@ -1100,6 +1130,7 @@ export default function App() {
         merit: (() => { try { return Number(localStorage.getItem('chua_merit') || 0); } catch { return 0; } })()
       });
 
+      loadMap(res.room.map);
       if (sceneRef.current) {
         selfAvatarRef.current = createAvatar(res.self, true);
 
@@ -1123,7 +1154,7 @@ export default function App() {
       if (res.profile) setProfile(res.profile);
       if (res.communal) {
         setCommunal(res.communal);
-        worldRef.current?.setBuiltProjects(res.communal.built, false);
+        setBuilt(res.communal.built, false);
       }
       applyRoomTheme(res.room.theme);
       setCurrentRoom({
@@ -1131,11 +1162,12 @@ export default function App() {
         name: res.room.name,
         count: res.room.count,
         max: res.room.max,
-        theme: res.room.theme
+        theme: res.room.theme,
+        map: res.room.map
       });
 
-      // Camera bắt đầu ngay sau lưng nhân vật, nhìn về chính điện
-      cameraAngle.current = { theta: 0, phi: 0.28, dist: 5.4 };
+      // Camera bắt đầu ngay sau lưng nhân vật, nhìn theo hướng nhân vật
+      cameraAngle.current = { theta: (res.self.ry ?? Math.PI) + Math.PI, phi: 0.28, dist: 5.4 };
       setHasEntered(true);
       updateOnlinePlayers();
       sound.startMusic();
@@ -1182,29 +1214,30 @@ export default function App() {
       return;
     }
 
+    // Chỗ đứng làm hành động theo bản đồ (src/shared/maps.ts)
+    const spec = getMapSpec(mapRef.current);
     let spot: { x: number; z: number; ry: number } | null = null;
     switch (type) {
-      case 'incense':
-        // Đứng trước lư hương lớn, hướng về chính điện
-        spot = { x: 0, z: 2.2, ry: Math.PI };
+      case 'incense':   // trước lư hương, hướng về tượng chính
+      case 'flower':    // trước bàn thờ
+      case 'bell':      // trong lầu chuông, nắm dây thừng
+      case 'drum':      // trước mặt trống
+      case 'repent':    // trước tượng Địa Tạng Bồ Tát
+        spot = spec.spots[type] || null;
         break;
       case 'bow': {
         const c = findFreeCushion();
-        if (c) spot = { x: c.x, z: c.z, ry: faceTo(c.x, c.z, HALL_FOCUS.x, HALL_FOCUS.z) };
+        if (c) spot = { x: c.x, z: c.z, ry: faceTo(c.x, c.z, spec.focus.x, spec.focus.z) };
         break;
       }
-      case 'flower':
-        // Trước bàn thờ, hướng về tượng Phật
-        spot = { x: 0, z: -11.9, ry: Math.PI };
+      case 'meditate': {
+        // Thiền đường: tự đến bồ đoàn trống gần nhất rồi mới ngồi (bấm lại khi đang thiền thì xả thiền)
+        if (mapRef.current === 'zen' && self.currentAnim !== 'meditate') {
+          const c = findFreeCushion();
+          if (c) spot = { x: c.x, z: c.z, ry: faceTo(c.x, c.z, spec.focus.x, spec.focus.z) };
+        }
         break;
-      case 'bell':
-        // Đứng trong lầu chuông, nắm dây thừng buộc vào chày gỗ
-        spot = { x: 20.55, z: 8, ry: -Math.PI / 2 };
-        break;
-      case 'drum':
-        // Đứng trước mặt trống
-        spot = { x: 18, z: 9.35, ry: Math.PI };
-        break;
+      }
       case 'kitchen': {
         // Đang bưng đĩa thì mang ra bàn; chưa thì đi vào quầy bếp, bảng Phụ bếp sẽ hiện ra
         if (kitchenRef.current.carrying) {
@@ -1361,6 +1394,21 @@ export default function App() {
   const handleSwitchRoom = async (targetRoomId: string) => {
     try {
       const res = await network.switchRoom(targetRoomId);
+      const nextMap: MapId = isMapId(res.room.map) ? res.room.map : 'main';
+      const mapChanged = nextMap !== mapRef.current;
+      loadMap(nextMap);
+      const me = selfAvatarRef.current;
+      if (mapChanged && me && res.self) {
+        // Sang cảnh khác: đứng ở điểm xuất hiện của cảnh mới
+        autoWalkTarget.current = null;
+        setIsNavigating(false);
+        me.group.position.set(res.self.x, 0, res.self.z);
+        me.group.rotation.y = res.self.ry;
+        me.targetPos.set(res.self.x, 0, res.self.z);
+        me.currentAnim = 'idle';
+        setCurrentAnim('idle');
+        cameraAngle.current.theta = res.self.ry + Math.PI;
+      }
       if (sceneRef.current) {
         for (const other of otherAvatarsRef.current.values()) {
           sceneRef.current.remove(other.group);
@@ -1388,7 +1436,8 @@ export default function App() {
         name: res.room.name,
         count: res.room.count,
         max: res.room.max,
-        theme: res.room.theme
+        theme: res.room.theme,
+        map: res.room.map
       });
 
       setShowRoomModal(false);
@@ -1579,7 +1628,8 @@ export default function App() {
               <Music size={15} />
             </button>
 
-            {/* Nút Ngày / Đêm */}
+            {/* Nút Ngày / Đêm (ẩn ở cảnh có ánh sáng cố định) */}
+            {!getMapSpec(mapId).fixedLight && (
             <button
               type="button"
               onClick={() => setIsNight(!isNight)}
@@ -1588,6 +1638,7 @@ export default function App() {
             >
               {isNight ? <Sun size={15} /> : <Moon size={15} />}
             </button>
+            )}
 
             {/* Toàn màn hình */}
             <button
@@ -1649,7 +1700,17 @@ export default function App() {
             currentAnim={currentAnim}
             isNavigatingToTarget={isNavigating}
             onTriggerAction={handleTriggerAction}
+            allowed={getMapSpec(mapId).actions}
           />
+
+          {/* Bảng thông tin: các tầng địa ngục, tượng nghìn tay, hướng dẫn ngồi thiền */}
+          {infoId && infoId !== infoClosed && (() => {
+            const info = getInfo(infoId);
+            return info ? <InfoPanel info={info} onClose={() => setInfoClosed(infoId)} /> : null;
+          })()}
+
+          {/* Thiền đường: vòng hướng dẫn hít thở khi đang ngồi thiền */}
+          {mapId === 'zen' && currentAnim === 'meditate' && <MeditationGuide />}
 
           {/* Hướng dẫn phím di chuyển (chỉ hiện trên Desktop) */}
           {!isTouchDevice && <div className="fixed bottom-1 left-4 z-10 text-[10px] text-stone-300 hidden md:block pointer-events-none drop-shadow">
