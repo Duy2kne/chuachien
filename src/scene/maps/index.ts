@@ -4,12 +4,12 @@ import { TempleWorld } from '../templeWorld.js';
 import type { MapId } from '../../shared/maps.js';
 import { buildPagodaMap } from './pagodaMap.js';
 import { buildHellMap } from './hellMap.js';
-import { buildZenMap } from './zenMap.js';
+import { buildArhatMap } from './arhatMap.js';
 
 const BUILDERS: Partial<Record<MapId, (w: TempleWorld) => void>> = {
   pagoda: buildPagodaMap,
   hell: buildHellMap,
-  zen: buildZenMap
+  arhat: buildArhatMap
 };
 
 export function createWorld(scene: THREE.Scene, mapId: MapId = 'main') {
