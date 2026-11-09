@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import type { RobeColor, AvatarStyle, RoomInfo, OverallStats } from '../types.js';
 import { ROBE_COLORS } from '../scene/playerAvatar.js';
+import { getMapSpec } from '../shared/maps.js';
 import { getTheme } from '../scene/themes.js';
 import { Sparkles, Users, Plus, Volume2, ShieldCheck, HeartHandshake } from 'lucide-react';
 
@@ -247,7 +248,7 @@ export const EntranceScreen: React.FC<EntranceScreenProps> = ({
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-serif font-bold text-sm truncate" title={getTheme(r.theme).name}>{getTheme(r.theme).icon} {r.name}</span>
+                      <span className="font-serif font-bold text-sm truncate" title={getTheme(r.theme).name}>{getTheme(r.theme).icon} {r.name}{r.map && r.map !== 'main' && <span className="ml-1 font-sans font-normal text-[10px] text-amber-400/80">· {getMapSpec(r.map).name}</span>}</span>
                       {isFull ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-800">Đầy</span>
                       ) : (
