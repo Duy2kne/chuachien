@@ -395,6 +395,11 @@ export class TempleWorld {
   public animators: ((delta: number, elapsed: number) => void)[] = [];
   // Điểm xem thông tin: đứng gần thì hiện bảng nội dung (các tầng địa ngục, hướng dẫn ngồi thiền...)
   public infoPoints: { id: string; x: number; z: number; r: number }[] = [];
+  // Bản đồ nhỏ: các khối vẽ lên (vách, bệ, tượng) và điểm đánh số (tầng địa ngục, tượng La Hán)
+  public minimap: {
+    rects: { x0: number; x1: number; z0: number; z1: number; kind: 'wall' | 'dais' | 'altar' | 'statue' }[];
+    marks: { x: number; z: number; label: string; id?: string }[];
+  } = { rects: [], marks: [] };
   // Vùng hạt bay (cánh hoa, tuyết, tàn lửa...): [minX, maxX, minZ, maxZ, độ cao tối đa]
   public particleArea: [number, number, number, number, number] = [-35, 35, -30, 40, 15];
   // Độ cao miệng lư hương (khói bốc lên từ đây)
