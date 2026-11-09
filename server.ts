@@ -10,6 +10,8 @@ import { fileURLToPath } from 'url';
 import { cleanText } from './src/server/profanity.js';
 import { DINING, TRAY_SLOTS, TRAY_TTL_MS, BUNS_PER_PLATE, KITCHEN_REACH, SERVE_REACH, traySlot, type TrayItem } from './src/shared/dining.js';
 import { SHOP_ITEMS, COMMUNAL_PROJECTS, getShopItem, weekKey, type CommunalState, type MeritProfile, type WeeklyWinner } from './src/shared/merit.js';
+import { getMapSpec, type MapId } from './src/shared/maps.js';
+import { seasonThemeId } from './src/scene/themes.js';
 import type { PlayerData, RoomInfo, IncenseItem, FlowerItem, LanternItem, WishItem, ChatMessage, OverallStats, ActionType, LeafPile, LeaderboardEntry, LeaderboardData, RobeColor } from './src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -149,14 +151,16 @@ interface RoomState {
   lastDrumTime: number;
   leaves: LeafPile[];
   theme: string;
+  map: MapId;
   trays: TrayItem[];
 }
 
-const BASE_ROOMS: { id: string; name: string; theme: string }[] = [
-  { id: 'tu-bi', name: 'Từ Bi', theme: 'chieu-vang' },
-  { id: 'hy-xa', name: 'Hỷ Xả', theme: 'xuan-hoa-dao' },
-  { id: 'an-lac', name: 'An Lạc', theme: 'thu-la-vang' },
-  { id: 'thanh-tinh', name: 'Thanh Tịnh', theme: 'dong-suong-tuyet' }
+// Mỗi phòng gốc một cảnh riêng (xem src/shared/maps.ts). Chùa tháp đổi mùa theo tháng thật.
+const BASE_ROOMS: { id: string; name: string; theme: string; map: MapId }[] = [
+  { id: 'tu-bi', name: 'Từ Bi', theme: 'chieu-vang', map: 'main' },
+  { id: 'hy-xa', name: 'Hỷ Xả', theme: seasonThemeId(), map: 'pagoda' },
+  { id: 'an-lac', name: 'An Lạc', theme: 'dia-nguc', map: 'hell' },
+  { id: 'thanh-tinh', name: 'Thanh Tịnh', theme: 'dien-thien', map: 'zen' }
 ];
 
 const EXTRA_ROOM_NAMES = [
@@ -182,7 +186,8 @@ for (const base of BASE_ROOMS) {
     lastDrumTime: 0,
     leaves: [],
     trays: [],
-    theme: base.theme
+    theme: base.theme,
+    map: base.map
   });
 }
 
@@ -317,28 +322,12 @@ const TOGGLE_MERIT_COOLDOWN = 20000;
 
 // ===================== LÁ ĐA RỤNG =====================
 const MAX_LEAVES_PER_ROOM = 18;
-// Vật cản lớn trong sân (lá không rơi vào các chỗ này): [x, z, bán kính]
-const LEAF_BLOCKERS: [number, number, number][] = [
-  [-18, 24, 9.2], [-18, 14, 3.6], [0, 0.4, 2.2], [18, 8, 5.2],
-  [-3.8, 0, 1], [3.8, 0, 1], [-3.8, 8, 1], [3.8, 8, 1], [-3.8, 16, 1], [3.8, 16, 1], [-3.8, 24, 1], [3.8, 24, 1],
-  [-5.2, -2.5, 1], [5.2, -2.5, 1], [-8.5, 4, 1], [8.5, 4, 1], [-8.5, 16, 1], [8.5, 16, 1], [-8.5, 28, 1], [8.5, 28, 1],
-  [-24, 4, 1.3], [-25, -8, 1.3], [-20, -18, 1.3], [24, 4, 1.3], [25, -8, 1.3], [20, -18, 1.3], [24, 14, 1.3], [24, 34, 1.3],
-  [-24, 34, 1.3], [26, 24, 1.3],
-  [20, 23.5, 8], [-23, -15, 3.2], [-17, -11, 2.8], [18, -12, 5.2], [-12.5, 33, 1.8] // bảo tháp, tượng Quan Âm, hồ sen 2, bia công đức
-];
-// Vùng lá có thể rơi: quanh gốc bồ đề, hai bên sân, ven tường cây xanh, lối đi
-const LEAF_ZONES: [number, number, number, number, number][] = [
-  // [minX, maxX, minZ, maxZ, trọng số]
-  [-24, -12, 8, 16, 4],   // dưới tán bồ đề
-  [-14, -5, -2, 30, 3],   // sân bên trái
-  [5, 14, -2, 30, 3],     // sân bên phải
-  [-2.5, 2.5, 4, 30, 2],  // lối đi giữa
-  [-27, -21, -16, 4, 2],  // dưới hàng cây bên trái
-  [21, 27, -16, 2, 2],    // dưới hàng cây bên phải
-  [-11, 11, -3.2, -0.8, 1] // trước bậc thềm chính điện
-];
-
-function randomLeafSpot(): { x: number; z: number } | null {
+// Vùng lá rơi và vật cản theo bản đồ (src/shared/maps.ts); bản đồ không có vùng lá thì không rụng lá
+function randomLeafSpot(map: MapId): { x: number; z: number } | null {
+  const spec = getMapSpec(map);
+  const LEAF_ZONES = spec.leafZones;
+  const LEAF_BLOCKERS = spec.leafBlockers || [];
+  if (!LEAF_ZONES?.length) return null;
   const total = LEAF_ZONES.reduce((a, z) => a + z[4], 0);
   for (let attempt = 0; attempt < 20; attempt++) {
     let r = Math.random() * total;
@@ -356,7 +345,7 @@ setInterval(() => {
   for (const room of rooms.values()) {
     if (room.players.size === 0 || room.leaves.length >= MAX_LEAVES_PER_ROOM) continue;
     if (Math.random() > 0.55) continue;
-    const spot = randomLeafSpot();
+    const spot = randomLeafSpot(room.map);
     if (!spot) continue;
     const leaf: LeafPile = {
       id: `leaf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -370,10 +359,18 @@ setInterval(() => {
   }
 }, 6000);
 
+// Chùa tháp đổi cảnh theo mùa thật (kiểm tra mỗi giờ, người vào sau thấy mùa mới)
+setInterval(() => {
+  const season = seasonThemeId();
+  for (const r of rooms.values()) if (r.map === 'pagoda' && r.isBase) r.theme = season;
+}, 3600000);
+
 // Thiền, gõ mõ, chắp tay liên tục: cứ 30 giây được thêm 1 công đức
 setInterval(() => {
   for (const session of players.values()) {
-    if (['meditate', 'wooden_fish', 'namaste'].includes(session.data.anim)) addMerit(session, 1);
+    const anim = session.data.anim;
+    if (anim === 'meditate') addMerit(session, getMapSpec(rooms.get(session.room)?.map).meditateMerit);
+    else if (['wooden_fish', 'namaste'].includes(anim)) addMerit(session, 1);
   }
 }, 30000);
 
@@ -387,7 +384,8 @@ function getRoomList(): RoomInfo[] {
       count: r.players.size,
       max: MAX_PER_ROOM,
       isBase: r.isBase,
-      theme: r.theme
+      theme: r.theme,
+      map: r.map
     });
   }
   return list;
@@ -634,6 +632,12 @@ const io = new SocketIOServer(httpServer, {
   pingInterval: 10000
 });
 
+// Điểm xuất hiện ngẫu nhiên quanh điểm spawn của bản đồ
+function spawnPoint(map: MapId) {
+  const sp = getMapSpec(map).spawn;
+  return { x: sp.x + (Math.random() - 0.5) * sp.spread, z: sp.z + (Math.random() - 0.5) * sp.spread, ry: sp.ry };
+}
+
 // Tìm hoặc tạo phòng phù hợp khi vào
 function resolveRoomForJoin(preferredRoomId?: string): RoomState {
   // Nếu có phòng mong muốn và còn chỗ
@@ -668,7 +672,8 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
           lastDrumTime: 0,
           leaves: [],
           trays: [],
-          theme: baseTarget.theme
+          theme: baseTarget.theme,
+          map: baseTarget.map
         };
         rooms.set(subId, newRoom);
         return newRoom;
@@ -706,7 +711,8 @@ function resolveRoomForJoin(preferredRoomId?: string): RoomState {
       lastDrumTime: 0,
       leaves: [],
       trays: [],
-      theme: randomTheme()
+      theme: randomTheme(),
+      map: 'main'
     };
     rooms.set(newId, newRoom);
     return newRoom;
@@ -762,7 +768,8 @@ io.on('connection', (socket: Socket) => {
       lastDrumTime: 0,
       leaves: [],
       trays: [],
-      theme: roomTheme
+      theme: roomTheme,
+      map: 'main'
     };
 
     rooms.set(newId, newRoom);
@@ -811,9 +818,10 @@ io.on('connection', (socket: Socket) => {
     socket.join(room.id);
     room.emptySince = null;
 
-    // Vị trí xuất hiện: sân chùa tiền điện (x: ±1.5, z: 22 ~ 24, nhìn về chính điện ry: Math.PI)
-    const spawnX = (Math.random() - 0.5) * 3;
-    const spawnZ = 22 + Math.random() * 2;
+    // Vị trí xuất hiện theo bản đồ của phòng (chùa chính: sân tiền điện, nhìn về chính điện)
+    const spawn = spawnPoint(room.map);
+    const spawnX = spawn.x;
+    const spawnZ = spawn.z;
 
     const playerData: PlayerData = {
       id: socket.id,
@@ -825,7 +833,7 @@ io.on('connection', (socket: Socket) => {
       x: spawnX,
       y: 0,
       z: spawnZ,
-      ry: Math.PI, // Nhìn về phía bắc (Chính điện)
+      ry: spawn.ry,
       anim: 'idle',
       items
     };
@@ -857,7 +865,7 @@ io.on('connection', (socket: Socket) => {
     const payload = {
       self: playerData,
       players: roomPlayers,
-      room: { id: room.id, name: room.name, count: room.players.size, max: MAX_PER_ROOM, theme: room.theme },
+      room: { id: room.id, name: room.name, count: room.players.size, max: MAX_PER_ROOM, theme: room.theme, map: room.map },
       incense: room.incense,
       flowers: room.flowers,
       lanterns: room.lanterns,
@@ -888,9 +896,10 @@ io.on('connection', (socket: Socket) => {
     const session = players.get(socket.id);
     if (!session) return;
 
-    // Giới hạn trong khuôn viên chùa (x: ±35, z: -35 đến 45)
-    const clampedX = Math.max(-35, Math.min(35, Number(data.x) || 0));
-    const clampedZ = Math.max(-35, Math.min(45, Number(data.z) || 0));
+    // Giới hạn trong khuôn viên của bản đồ
+    const B = getMapSpec(rooms.get(session.room)?.map).bounds;
+    const clampedX = Math.max(B.minX, Math.min(B.maxX, Number(data.x) || 0));
+    const clampedZ = Math.max(B.minZ, Math.min(B.maxZ, Number(data.z) || 0));
     const y = Math.max(0, Math.min(6, Number(data.y) || 0));
     const ry = Number(data.ry) || 0;
     const anim = data.anim || 'idle';
@@ -916,8 +925,15 @@ io.on('connection', (socket: Socket) => {
     const room = rooms.get(session.room);
     if (!room) return;
 
-    session.lastActionTime = now;
     const actionType = data.type;
+    // Mỗi bản đồ chỉ có một số hành động (chùa chính có thêm các bước phụ bếp)
+    const spec = getMapSpec(room.map);
+    const kitchenStep = ['take_plate', 'take_bun', 'lift_plate', 'serve'].includes(actionType);
+    if (!spec.actions.includes(actionType) && !(kitchenStep && spec.actions.includes('kitchen'))) {
+      if (typeof callback === 'function') callback({ error: 'Nơi này không có hoạt động đó 🙏' });
+      return;
+    }
+    session.lastActionTime = now;
     // Làm việc khác (không phải phụ bếp) thì coi như đặt đĩa đang bưng lại
     if (!['take_plate', 'take_bun', 'lift_plate', 'serve'].includes(actionType)) session.carrying = false;
     let meritGain = 0;
@@ -941,13 +957,14 @@ io.on('connection', (socket: Socket) => {
         session.data.anim = 'incense';
 
         // Cắm 3 nén hương vào lòng tro của lư hương lớn (tâm lư: x=0, z=0.4, mặt tro y≈1.63)
+        const urn = spec.incense || { x: 0, z: 0.4, y: 1.63, r: 0.8 };
         const angle = Math.random() * Math.PI * 2;
-        const radius = 0.15 + Math.random() * 0.65;
+        const radius = urn.r * (0.18 + Math.random() * 0.8);
         const incenseItem: IncenseItem = {
           id: `incense-${now}-${Math.random().toString(36).substr(2, 4)}`,
-          x: Math.cos(angle) * radius,
-          y: 1.63,
-          z: 0.4 + Math.sin(angle) * radius,
+          x: urn.x + Math.cos(angle) * radius,
+          y: urn.y,
+          z: urn.z + Math.sin(angle) * radius,
           createdAt: now,
           playerName: session.data.name
         };
@@ -966,9 +983,9 @@ io.on('connection', (socket: Socket) => {
         const flowerItem: FlowerItem = {
           id: `flower-${now}-${Math.random().toString(36).substr(2, 4)}`,
           // Đặt trên mặt bàn thờ (tâm bàn: z=-13.6, mặt bàn y≈2.15), tránh 2 cây nến ở x=±1.8
-          x: -1.4 + Math.random() * 2.8,
-          y: 2.15,
-          z: -13.95 + Math.random() * 0.75,
+          x: (spec.flower?.x ?? -1.4) + Math.random() * (spec.flower?.w ?? 2.8),
+          y: spec.flower?.y ?? 2.15,
+          z: (spec.flower?.z ?? -13.95) + Math.random() * (spec.flower?.d ?? 0.75),
           createdAt: now,
           playerName: session.data.name
         };
@@ -1091,6 +1108,13 @@ io.on('connection', (socket: Socket) => {
       case 'wave':
         meritGain = 0;
         session.data.anim = 'wave';
+        break;
+
+      case 'repent':
+        // Sám hối trước tượng Địa Tạng Bồ Tát (cảnh địa ngục)
+        meritGain = 5;
+        session.data.anim = 'repent';
+        broadCastText = `${session.data.name} vừa thành tâm sám hối trước Địa Tạng Bồ Tát 🙏`;
         break;
 
       // ===== PHỤ BẾP: lấy đĩa -> lấy 3 bánh bao -> bê đĩa -> đặt xuống bàn =====
@@ -1377,6 +1401,15 @@ io.on('connection', (socket: Socket) => {
     }
     socket.leave(session.room);
 
+    // Sang phòng có bản đồ khác: đưa tới điểm xuất hiện của bản đồ mới
+    if (!oldRoom || oldRoom.map !== targetRoom.map) {
+      const sp = spawnPoint(targetRoom.map);
+      session.data.x = sp.x;
+      session.data.z = sp.z;
+      session.data.y = 0;
+      session.data.ry = sp.ry;
+    }
+
     // Vào phòng mới (mâm đang bưng ở phòng cũ coi như đã đặt lại bếp)
     session.carrying = false;
     session.kitchenPlate = null;
@@ -1391,7 +1424,8 @@ io.on('connection', (socket: Socket) => {
 
     const payload = {
       ok: true,
-      room: { id: targetRoom.id, name: targetRoom.name, count: targetRoom.players.size, max: MAX_PER_ROOM, theme: targetRoom.theme },
+      room: { id: targetRoom.id, name: targetRoom.name, count: targetRoom.players.size, max: MAX_PER_ROOM, theme: targetRoom.theme, map: targetRoom.map },
+      self: { x: session.data.x, z: session.data.z, ry: session.data.ry },
       players: Array.from(targetRoom.players.values()),
       incense: targetRoom.incense,
       flowers: targetRoom.flowers,
