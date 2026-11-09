@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { RoomInfo, PlayerData } from '../types.js';
 import { ROBE_COLORS } from '../scene/playerAvatar.js';
+import { getMapSpec } from '../shared/maps.js';
 import { getTheme, THEMES } from '../scene/themes.js';
 import { X, Users, Copy, Check, Plus, DoorOpen } from 'lucide-react';
 
@@ -233,7 +234,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-serif font-bold text-xs" title={getTheme(r.theme).name}>{getTheme(r.theme).icon} {r.name}</span>
+                        <span className="font-serif font-bold text-xs" title={getTheme(r.theme).name}>{getTheme(r.theme).icon} {r.name}{r.map && r.map !== 'main' && <span className="ml-1 font-sans font-normal text-[10px] text-amber-400/80">· {getMapSpec(r.map).name}</span>}</span>
                         {isCurrent ? (
                           <span className="text-[10px] text-amber-400 font-medium">Hiện tại</span>
                         ) : isFull ? (
