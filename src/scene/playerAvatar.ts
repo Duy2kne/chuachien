@@ -17,6 +17,7 @@ export const ROBE_COLORS: Record<RobeColor, { hex: number; name: string; css: st
 // Thời lượng các hành động làm một lần (giây). Hành động không có ở đây là dạng bật/tắt.
 export const ACTION_DURATION: Partial<Record<ActionType, number>> = {
   bow: 6.2,
+  repent: 6.2,
   incense: 5.4,
   flower: 3.6,
   bell: 3.0,
@@ -1097,7 +1098,8 @@ export class PlayerAvatar {
         break;
       }
 
-      case 'bow': {
+      case 'bow':
+      case 'repent': {
         // Quỳ xuống chắp tay, rồi lạy sát đất 3 lạy (mỗi lạy có tiếng khánh)
         PlayerAvatar.kneel(p, smooth(t / 0.5));
         const cycle = Math.max(0, t - 0.5);
