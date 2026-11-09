@@ -1,7 +1,7 @@
 // Cảnh của từng phòng: cùng một ngôi chùa nhưng khác mùa, khác giờ, khác thời tiết.
 // Server gán theme cho phòng (server.ts: BASE_ROOMS / randomTheme), client đổi màu trời, cây, hạt rơi theo theme.
 
-export type ParticleKind = 'petal' | 'leaf' | 'snow' | 'firefly';
+export type ParticleKind = 'petal' | 'leaf' | 'snow' | 'firefly' | 'ember' | 'dust';
 
 export interface TempleTheme {
   id: string;
@@ -9,6 +9,11 @@ export interface TempleTheme {
   icon: string;
   description: string;
   forceNight?: boolean;
+  // Ánh sáng cố định (cảnh trong hang / trong điện): không đổi ngày đêm, không hiện trong danh sách chọn cảnh
+  fixed?: boolean;
+  glow?: number;          // độ sáng đèn lồng, nến (emissive) khi ánh sáng cố định
+  lights?: number;        // cường độ đèn điểm (nến, đèn lồng) khi ánh sáng cố định
+  bloom?: [number, number]; // [độ toả sáng, ngưỡng] của hiệu ứng bloom
   sky: { top: number; bottom: number };
   fog: { color: number; near: number; far: number };
   sun: { color: number; intensity: number; position: [number, number, number] };
@@ -123,5 +128,64 @@ export const THEMES: Record<string, TempleTheme> = {
   }
 };
 
+// Ánh sáng riêng của 2 cảnh đặc biệt (gán cố định cho phòng, xem src/shared/maps.ts)
+export const FIXED_THEMES: Record<string, TempleTheme> = {
+  'dia-nguc': {
+    id: 'dia-nguc',
+    name: 'Địa ngục',
+    icon: '🔥',
+    description: 'Hang đá u tối, lửa nghiệp đỏ rực, tàn lửa bay lên',
+    fixed: true,
+    glow: 1.3,
+    lights: 1.4,
+    bloom: [0.55, 0.72],
+    sky: { top: 0x050102, bottom: 0x2e0a05 },
+    fog: { color: 0x1a0604, near: 12, far: 78 },
+    sun: { color: 0xff7a55, intensity: 0.75, position: [12, 40, 18] },
+    hemi: { sky: 0xff9a7a, ground: 0x2a0806, intensity: 0.85 },
+    grass: 0x3a2a24,
+    grassBlade: 0x3a2a24,
+    foliage: [0x3a2a24],
+    palm: 0x3a2a24,
+    blossom: 0x7a1a0a,
+    treeFlower: 0x7a1a0a,
+    mountains: [0x1a0a08, 0x1a0a08, 0x1a0a08],
+    particles: { kind: 'ember', color: 0xff7a2a, count: 300, size: 0.55, fallSpeed: 0.9 },
+    leafPile: [0x3a2a24]
+  },
+  'dien-thien': {
+    id: 'dien-thien',
+    name: 'Thiền đường',
+    icon: '🧘',
+    description: 'Chánh điện ấm áp, nắng sớm xuyên qua song cửa',
+    fixed: true,
+    glow: 1.0,
+    lights: 1.15,
+    bloom: [0.3, 0.86],
+    sky: { top: 0x9fc4e6, bottom: 0xffe6c4 },
+    fog: { color: 0x3a2a1c, near: 26, far: 140 },
+    sun: { color: 0xffd49a, intensity: 1.35, position: [-22, 40, 16] },
+    hemi: { sky: 0xffe6c4, ground: 0x5a3a22, intensity: 0.8 },
+    grass: 0xd9f0c4,
+    grassBlade: 0x6a9a4a,
+    foliage: [0x2d6a4f, 0x40916c, 0x52b788, 0x386641],
+    palm: 0x386641,
+    blossom: 0xfacc15,
+    treeFlower: 0xffffff,
+    mountains: [0x6f8f72, 0x7f9ea0, 0x9fb4c0],
+    particles: { kind: 'dust', color: 0xffe2a0, count: 170, size: 0.32, fallSpeed: 0.12 },
+    leafPile: [0x9a7b2f, 0x6b8e23]
+  }
+};
+
+// Mùa theo tháng dương lịch (cho chùa tháp đổi cảnh theo mùa thật)
+export function seasonThemeId(date = new Date()): string {
+  const m = date.getMonth() + 1;
+  if (m <= 3) return 'xuan-hoa-dao';
+  if (m <= 6) return 'chieu-vang';
+  if (m <= 9) return 'thu-la-vang';
+  return 'dong-suong-tuyet';
+}
+
 export const DEFAULT_THEME = THEMES['chieu-vang'];
-export const getTheme = (id?: string) => (id && THEMES[id]) || DEFAULT_THEME;
+export const getTheme = (id?: string) => (id && (THEMES[id] || FIXED_THEMES[id])) || DEFAULT_THEME;
