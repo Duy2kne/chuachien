@@ -114,7 +114,10 @@ export function buildHellMap(w: TempleWorld) {
     [-35, 35, -35.2, -34], [-35, 35, 24.5, 25.7], [-35.2, -34, -35, 25.7], [34, 35.2, -35, 25.7],
     [-34, 27, 10.5, 11.5], [-27, 34, -2.5, -1.5], [-34, 27, -15.5, -14.5]
   ];
-  for (const [x0, x1, z0, z1] of walls) rockWall(w, x0, x1, z0, z1, H, M.rock, sd++);
+  for (const [x0, x1, z0, z1] of walls) {
+    rockWall(w, x0, x1, z0, z1, H, M.rock, sd++);
+    w.minimap.rects.push({ x0, x1, z0, z1, kind: 'wall' });
+  }
 
   // Nhũ đá ven tường phía nam mỗi hành lang
   const rnd = seeded(77);
@@ -174,6 +177,7 @@ export function buildHellMap(w: TempleWorld) {
   w.root.add(intro);
   w.collisionCircles.push({ x: -30.8, z: 13.4, r: 1.3 });
   w.infoPoints.push({ id: 'hell-0', x: -30.6, z: 15.6, r: 2.6 });
+  w.minimap.marks.push({ x: -30.6, z: 14.6, label: 'i', id: 'hell-0' });
 
   // ---------- 18 tầng ----------
   const C1X = [-19, -11, -3, 5, 13, 21];
@@ -210,6 +214,8 @@ export function buildHellMap(w: TempleWorld) {
     if (coldLevels.has(L.n)) (pool.material as THREE.MeshBasicMaterial).color.setHex(0x5aa0ff);
     else (pool.material as THREE.MeshBasicMaterial).color.setHex(0xff5a1a);
     w.infoPoints.push({ id: `hell-${L.n}`, x, z: c.zWall + 5.4, r: 3.0 });
+    w.minimap.rects.push({ x0: x - 3.2, x1: x + 3.2, z0: c.zWall, z1: zc + 1.9, kind: 'dais' });
+    w.minimap.marks.push({ x, z: zc, label: String(L.n), id: `hell-${L.n}` });
   });
 
   // Đèn điểm đỏ rực: 2 ngọn mỗi hành lang (cường độ cố định, không theo ngày/đêm)
@@ -265,6 +271,8 @@ export function buildHellMap(w: TempleWorld) {
   brazier(-9, -22);
   brazier(9, -22);
   w.infoPoints.push({ id: 'hell-19', x: 0, z: -23.6, r: 3.0 });
+  w.minimap.rects.push({ x0: -3.4, x1: 3.4, z0: -32.4, z1: -25.6, kind: 'altar' });
+  w.minimap.marks.push({ x: 0, z: -29, label: '卍', id: 'hell-19' });
 
   // ---------- Hoạt ảnh lửa chung ----------
   fx.add((_d, t) => {
