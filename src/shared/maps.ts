@@ -5,7 +5,7 @@
 import type { ActionType } from '../types.js';
 import { DINING } from './dining.js';
 
-export type MapId = 'main' | 'pagoda' | 'hell' | 'zen';
+export type MapId = 'main' | 'pagoda' | 'hell' | 'arhat';
 
 export interface MapSpot { x: number; z: number; ry: number }
 
@@ -34,6 +34,8 @@ export interface MapSpec {
   meditateMerit: number;
   // Cảnh luôn cố định ánh sáng (không có nút ngày/đêm)
   fixedLight?: boolean;
+  // Hiện bản đồ nhỏ góc màn hình (cảnh nhiều điểm tham quan)
+  minimap?: boolean;
 }
 
 const BASIC: ActionType[] = ['namaste', 'bow', 'incense', 'flower', 'wooden_fish', 'meditate'];
@@ -123,14 +125,15 @@ export const MAPS: Record<MapId, MapSpec> = {
     focus: { x: 0, z: -29 },
     orbit: { x: -4, z: 4, r: 26, h: 16, y: 1 },
     meditateMerit: 1,
-    fixedLight: true
+    fixedLight: true,
+    minimap: true
   },
 
-  // Điện thiền: chánh điện thờ Đức Phật Thích Ca, 30 bồ đoàn ngồi thiền
-  zen: {
-    id: 'zen',
-    name: 'Thiền Đường',
-    icon: '🧘',
+  // La Hán Đường: 18 vị La Hán dọc hai vách, cuối điện thờ Đức Phật Thích Ca
+  arhat: {
+    id: 'arhat',
+    name: 'La Hán Đường',
+    icon: '🏯',
     spawn: { x: 0, z: 8.5, spread: 2, ry: Math.PI },
     bounds: { minX: -13, maxX: 13, minZ: -24, maxZ: 20 },
     actions: [...BASIC, 'wave'],
@@ -142,8 +145,9 @@ export const MAPS: Record<MapId, MapSpec> = {
     },
     focus: { x: 0, z: -21.5 },
     orbit: { x: 0, z: -4, r: 8.5, h: 5, y: 3.5 },
-    meditateMerit: 2,
-    fixedLight: true
+    meditateMerit: 1,
+    fixedLight: true,
+    minimap: true
   }
 };
 
@@ -207,18 +211,18 @@ function hellRoute(fromZ: number, toZ: number): P[] {
   return via;
 }
 
-// Thiền đường: ra/vào qua cửa chính giữa (z = 12.3)
-export const ZEN_DOOR_Z = 12.3;
-function zenRoute(fromZ: number, toZ: number): P[] {
-  const inA = fromZ < ZEN_DOOR_Z;
-  const inB = toZ < ZEN_DOOR_Z;
+// La Hán Đường: ra/vào qua cửa chính giữa (z = 12.3)
+export const HALL_DOOR_Z = 12.3;
+function hallRoute(fromZ: number, toZ: number): P[] {
+  const inA = fromZ < HALL_DOOR_Z;
+  const inB = toZ < HALL_DOOR_Z;
   if (inA === inB) return [];
-  return inA ? [{ x: 0, z: ZEN_DOOR_Z - 1.6 }, { x: 0, z: ZEN_DOOR_Z + 1.6 }] : [{ x: 0, z: ZEN_DOOR_Z + 1.6 }, { x: 0, z: ZEN_DOOR_Z - 1.6 }];
+  return inA ? [{ x: 0, z: HALL_DOOR_Z - 1.6 }, { x: 0, z: HALL_DOOR_Z + 1.6 }] : [{ x: 0, z: HALL_DOOR_Z + 1.6 }, { x: 0, z: HALL_DOOR_Z - 1.6 }];
 }
 
 export function planRoute(map: MapId, fromX: number, fromZ: number, toX: number, toZ: number): P[] {
   if (map === 'main') return mainRoute(fromX, fromZ, toX, toZ);
   if (map === 'hell') return hellRoute(fromZ, toZ);
-  if (map === 'zen') return zenRoute(fromZ, toZ);
+  if (map === 'arhat') return hallRoute(fromZ, toZ);
   return [];
 }
