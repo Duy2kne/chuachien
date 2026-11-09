@@ -14,6 +14,7 @@ const ACTIONS: ActionItem[] = [
   { type: 'bow', label: 'Lạy Phật', icon: '🙇', merit: 3 },
   { type: 'incense', label: 'Thắp hương', icon: '🪔', merit: 5 },
   { type: 'flower', label: 'Dâng hoa', icon: '🪷', merit: 5 },
+  { type: 'repent', label: 'Sám hối', icon: '📿', merit: 5 },
   { type: 'wooden_fish', label: 'Gõ mõ', icon: '🪵', merit: 2, isToggle: true },
   { type: 'meditate', label: 'Ngồi thiền', icon: '🧘', merit: 3, isToggle: true },
   { type: 'bell', label: 'Thỉnh chuông', icon: '🔔', merit: 3 },
@@ -29,12 +30,14 @@ interface ActionBarProps {
   currentAnim: ActionType;
   isNavigatingToTarget: boolean;
   onTriggerAction: (type: ActionType) => void;
+  allowed?: ActionType[];   // hành động có ở cảnh hiện tại (mặc định: tất cả)
 }
 
 export const ActionBar: React.FC<ActionBarProps> = ({
   currentAnim,
   isNavigatingToTarget,
-  onTriggerAction
+  onTriggerAction,
+  allowed
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ left: false, right: false });
@@ -50,7 +53,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
     updateEdges();
     window.addEventListener('resize', updateEdges);
     return () => window.removeEventListener('resize', updateEdges);
-  }, []);
+  }, [allowed]);
 
   // Lăn chuột dọc cũng cuộn ngang thanh hành động
   const handleWheel = (e: React.WheelEvent) => {
@@ -69,7 +72,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
           onWheel={handleWheel}
           className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 overflow-x-auto no-scrollbar touch-pan-x scroll-smooth"
         >
-          {ACTIONS.map((act) => {
+          {ACTIONS.filter(act => !allowed || allowed.includes(act.type)).map((act) => {
             const isActive = currentAnim === act.type || (act.type === 'kitchen' && ['take_plate', 'take_bun', 'lift_plate', 'carry', 'serve'].includes(currentAnim));
             return (
               <button
